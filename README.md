@@ -11,6 +11,17 @@ Paste or share a model link. AirSlice shows the model, you pick a print profile 
                                             └─ uploads over FTPS, starts and follows the print over MQTT
 ```
 
+<p align="center">
+  <img src="docs/screenshots/model.png" width="250" alt="A MakerWorld model with its print profiles">
+  <img src="docs/screenshots/plate.png" width="250" alt="A sliced plate in 3D with print time and filament">
+  <img src="docs/screenshots/layers.png" width="250" alt="The layer view of the sliced G-code">
+</p>
+<p align="center">
+  <img src="docs/screenshots/printing.png" width="250" alt="A printer card while printing, with the AMS trays">
+  <img src="docs/screenshots/queue.png" width="250" alt="The queue for one printer type">
+  <img src="docs/screenshots/notifications.png" width="250" alt="Notification settings">
+</p>
+
 > **Alpha.** AirSlice works day to day on a P1S, but other printer models haven't been tried yet (see [Printers](#printers)). Expect rough edges, and send **Settings → About → Copy diagnostics** when something goes wrong.
 
 ## Features
@@ -50,7 +61,9 @@ AirSlice connects *to* the printer on ports 8883 (MQTT over TLS), 990 plus passi
 
 ### Home Assistant add-on
 
-1. **Settings → Add-ons → Add-on Store → ⋮ → Repositories**, add `https://github.com/thrawnarn/AirSlice`.
+[![Open your Home Assistant instance and show the add add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fthrawnarn%2FAirSlice)
+
+1. Click the button above, or go to **Settings → Add-ons → Add-on Store → ⋮ → Repositories** and add `https://github.com/thrawnarn/AirSlice`.
 2. Install **AirSlice** and start it. It appears in the sidebar; Home Assistant signs you in.
 3. Add your printer under **Settings → Printers**.
 

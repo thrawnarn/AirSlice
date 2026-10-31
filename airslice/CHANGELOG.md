@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: Printables and Thingiverse pictures didn't show once the app's service worker was active.
+
 ## 0.1.0
 
 First alpha.

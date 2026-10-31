@@ -197,8 +197,14 @@ screenshots).
   the cap is 60 M triangles read. Generated plates in the release build: 6.5 M
   triangles 5 s / ~310 MB, 20 M (1.4 GB XML) 13 s / ~390 MB, 1.4 MB sent. Preview
   failures are logged (`preview failed`).
-- Headless Chromium on the Alpine HA SSH add-on has no WebGL (not even SwiftShader), so
-  the 3D preview can't be screenshotted there; PlatePreview catches the failure.
+- Headless Chromium on the Alpine HA SSH add-on has no WebGL (not even SwiftShader);
+  PlatePreview catches the failure. For screenshots with the 3D preview run Chromium
+  headful under `xvfb-run` (apk `xvfb-run mesa-gl mesa-egl`, `LIBGL_ALWAYS_SOFTWARE=1`,
+  playwright `headless: false`, `--hide-scrollbars`). Emoji/arrows need apk
+  `font-noto-emoji font-dejavu`. README screenshots live in `docs/screenshots/`.
+- The service worker must leave cross-origin requests alone: it runs under the page's
+  CSP (`connect-src 'self'`), so fetching a Printables/Thingiverse picture there fails
+  and the cached page came back instead (broken covers in the installed app).
 - Leaving objects out of a plate: remove only the plate's `<model_instance>` entries in
   model_settings.config (`threemf::keep_plate_objects`). Removing the `<item>` from the
   3dmodel build makes OrcaSlicer fail to load the file (-6). Copies + arrange keep the

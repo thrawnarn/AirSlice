@@ -17,12 +17,15 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
-  if (req.method !== "GET" || new URL(req.url).pathname.includes("/api/")) return;
+  const url = new URL(req.url);
+  // Pictures from Printables and Thingiverse load straight from the browser:
+  // the page's connect-src 'self' would block fetching them from here.
+  if (req.method !== "GET" || url.origin !== location.origin || url.pathname.includes("/api/")) return;
   // Network first, cache as fallback.
   event.respondWith(
     fetch(req)
       .then((res) => {
-        if (res.ok && new URL(req.url).origin === location.origin) {
+        if (res.ok) {
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put(req, copy));
         }

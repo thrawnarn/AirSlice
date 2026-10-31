@@ -3,3 +3,4 @@ frontend/dist
 backend/target
 **/.git
 data
+docs
