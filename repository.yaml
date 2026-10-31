@@ -1,0 +1,6 @@
+# Home Assistant add-on repository.
+# Add https://github.com/thrawnarn/AirSlice in
+# Settings → Add-ons → Add-on Store → ⋮ → Repositories.
+name: AirSlice add-ons
+url: https://github.com/thrawnarn/AirSlice
+maintainer: thrawnarn

@@ -1,0 +1,563 @@
+//! Reading Bambu/Orca 3MF projects: plates, thumbnails, settings, and the
+//! slice results written by the slicer.
+
+use crate::models::{FilamentInfo, Inspection, PlateInfo, PlateObject, SlicedFilament};
+use anyhow::{Context, anyhow};
+use quick_xml::events::{BytesStart, Event};
+use std::{
+    collections::HashMap,
+    io::Read,
+    path::{Path, PathBuf},
+};
+
+// ------------------------------------------------------------------ tiny DOM
+
+#[derive(Debug, Default, Clone)]
+pub struct Node {
+    pub name: String,
+    pub attrs: HashMap<String, String>,
+    pub children: Vec<Node>,
+}
+
+impl Node {
+    fn attr(&self, k: &str) -> Option<&str> {
+        self.attrs.get(k).map(String::as_str)
+    }
+    fn children_named<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Node> + 'a {
+        self.children.iter().filter(move |c| c.name == name)
+    }
+    /// `<metadata key="k" value="v"/>` children as a map.
+    fn metadata(&self) -> HashMap<String, String> {
+        self.children_named("metadata")
+            .filter_map(|m| Some((m.attr("key")?.to_string(), m.attr("value").unwrap_or("").to_string())))
+            .collect()
+    }
+}
+
+fn element(e: &BytesStart<'_>) -> anyhow::Result<Node> {
+    let mut node = Node { name: e.local_name().as_ref().to_string(), ..Default::default() };
+    for a in e.attributes().flatten() {
+        let key = a.key.local_name().as_ref().to_string();
+        let value = unescape(&a.value);
+        node.attrs.insert(key, value);
+    }
+    Ok(node)
+}
+
+fn unescape(raw: &str) -> String {
+    if !raw.contains('&') {
+        return raw.to_string();
+    }
+    raw.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
+}
+
+fn entry_names(zip: &zip::ZipArchive<std::fs::File>) -> Vec<String> {
+    zip.file_names().filter_map(|n| n.ok().map(|c| c.into_owned())).collect()
+}
+
+pub fn parse_xml(text: &str) -> anyhow::Result<Node> {
+    let mut reader = quick_xml::Reader::from_str(text);
+    let mut stack: Vec<Node> = vec![Node { name: "#root".into(), ..Default::default() }];
+    loop {
+        match reader.read_event().context("invalid XML")? {
+            Event::Start(e) => stack.push(element(&e)?),
+            Event::Empty(e) => {
+                let n = element(&e)?;
+                stack.last_mut().unwrap().children.push(n);
+            }
+            Event::End(_) => {
+                if stack.len() > 1 {
+                    let n = stack.pop().unwrap();
+                    stack.last_mut().unwrap().children.push(n);
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    while stack.len() > 1 {
+        let n = stack.pop().unwrap();
+        stack.last_mut().unwrap().children.push(n);
+    }
+    Ok(stack.pop().unwrap())
+}
+
+// ------------------------------------------------------------------ archive
+
+fn open(path: &Path) -> anyhow::Result<zip::ZipArchive<std::fs::File>> {
+    let f = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    zip::ZipArchive::new(f).context("not a valid 3MF (zip) file")
+}
+
+fn read_entry(zip: &mut zip::ZipArchive<std::fs::File>, name: &str, limit: u64) -> Option<Vec<u8>> {
+    let entry = zip.by_name(name).ok()?;
+    let mut buf = Vec::new();
+    entry.take(limit).read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
+fn read_text(zip: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Option<String> {
+    read_entry(zip, name, 64 * 1024 * 1024).map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
+fn plate_gcode_index(name: &str) -> Option<u32> {
+    name.strip_prefix("Metadata/plate_")?.strip_suffix(".gcode")?.parse().ok()
+}
+
+/// Normalize "FF0000", "#ff0000ff" -> "#FF0000".
+pub fn hex_color(raw: &str) -> String {
+    let hex: String = raw.trim().trim_start_matches('#').chars().take(6).collect();
+    if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) { format!("#{}", hex.to_uppercase()) } else { String::new() }
+}
+
+fn json_list(v: &serde_json::Value, key: &str) -> Vec<String> {
+    match v.get(key) {
+        Some(serde_json::Value::Array(a)) => a.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect(),
+        Some(serde_json::Value::String(s)) => s.split(';').map(str::to_string).collect(),
+        _ => vec![],
+    }
+}
+
+/// Inspect a downloaded file. Meshes (STL/OBJ/STEP) are a single "plate".
+pub fn inspect(path: &Path) -> anyhow::Result<Inspection> {
+    let lower = path.to_string_lossy().to_lowercase();
+    if !lower.ends_with(".3mf") {
+        return Ok(Inspection {
+            kind: "mesh".into(),
+            plates: vec![PlateInfo { index: 1, name: None, has_thumbnail: false, object_count: 1, objects: vec![], prediction_secs: None, weight_g: None }],
+            ..Default::default()
+        });
+    }
+    let mut zip = open(path)?;
+    let names: Vec<String> = entry_names(&zip);
+    let sliced_plates: Vec<u32> = names.iter().filter_map(|n| plate_gcode_index(n)).collect();
+
+    let mut plates: Vec<PlateInfo> = Vec::new();
+    if let Some(xml) = read_text(&mut zip, "Metadata/model_settings.config")
+        && let Ok(root) = parse_xml(&xml) {
+            for config in root.children_named("config") {
+                for plate in config.children_named("plate") {
+                    let meta = plate.metadata();
+                    let Some(index) = meta.get("plater_id").and_then(|v| v.parse::<u32>().ok()) else { continue };
+                    let names: HashMap<String, String> = config
+                        .children_named("object")
+                        .filter_map(|o| Some((o.attr("id")?.to_string(), o.metadata().get("name")?.clone())))
+                        .collect();
+                    let objects: Vec<PlateObject> = plate
+                        .children_named("model_instance")
+                        .filter_map(|i| i.metadata().get("object_id").cloned())
+                        .map(|id| PlateObject { name: names.get(&id).cloned().unwrap_or_else(|| format!("Object {id}")), id })
+                        .collect();
+                    plates.push(PlateInfo {
+                        index,
+                        name: meta.get("plater_name").filter(|n| !n.trim().is_empty()).cloned(),
+                        has_thumbnail: false,
+                        object_count: objects.len() as u32,
+                        objects,
+                        prediction_secs: None,
+                        weight_g: None,
+                    });
+                }
+            }
+        }
+    if plates.is_empty() {
+        // Plain 3MF from other tools, or a sliced file: derive from contents.
+        let mut idx: Vec<u32> = if sliced_plates.is_empty() { vec![1] } else { sliced_plates.clone() };
+        idx.sort_unstable();
+        idx.dedup();
+        plates = idx.into_iter().map(|i| PlateInfo { index: i, name: None, has_thumbnail: false, object_count: 0, objects: vec![], prediction_secs: None, weight_g: None }).collect();
+    }
+    // A sliced file can only print the plates that have G-code.
+    if !sliced_plates.is_empty() {
+        plates.retain(|p| sliced_plates.contains(&p.index));
+    }
+    // Plates without objects can't be printed.
+    if plates.iter().any(|p| p.object_count > 0) {
+        plates.retain(|p| p.object_count > 0 || sliced_plates.contains(&p.index));
+    }
+    for p in &mut plates {
+        p.has_thumbnail = thumbnail_entry(&names, p.index).is_some();
+    }
+    // Estimates the file brings along (projects saved after slicing, and
+    // every pre-sliced file).
+    if let Some(xml) = read_text(&mut zip, "Metadata/slice_info.config")
+        && let Ok(root) = parse_xml(&xml)
+    {
+        for plate in root.children_named("config").flat_map(|c| c.children_named("plate")) {
+            let meta = plate.metadata();
+            let Some(index) = meta.get("index").and_then(|v| v.parse::<u32>().ok()) else { continue };
+            if let Some(p) = plates.iter_mut().find(|p| p.index == index) {
+                p.prediction_secs = meta.get("prediction").and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 0.0).map(|v| v as u64);
+                p.weight_g = meta.get("weight").and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 0.0);
+            }
+        }
+    }
+    plates.sort_by_key(|p| p.index);
+
+    let mut out = Inspection {
+        kind: if sliced_plates.is_empty() { "project".into() } else { "sliced".into() },
+        plates,
+        ..Default::default()
+    };
+    if let Some(text) = read_text(&mut zip, "Metadata/project_settings.config")
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            out.printer_model = v.get("printer_model").and_then(|s| s.as_str()).filter(|s| !s.is_empty()).map(str::to_string);
+            out.printer_profile =
+                v.get("printer_settings_id").and_then(|s| s.as_str()).filter(|s| !s.is_empty()).map(str::to_string);
+            let types = json_list(&v, "filament_type");
+            let colors = json_list(&v, "filament_colour");
+            out.filaments = types
+                .iter()
+                .enumerate()
+                .map(|(i, t)| FilamentInfo { kind: t.clone(), color: colors.get(i).map(|c| hex_color(c)).unwrap_or_default() })
+                .collect();
+        }
+    Ok(out)
+}
+
+fn thumbnail_entry(names: &[String], plate: u32) -> Option<String> {
+    [
+        format!("Metadata/plate_{plate}.png"),
+        format!("Metadata/top_{plate}.png"),
+        format!("Metadata/plate_{plate}_small.png"),
+        format!("Metadata/pick_{plate}.png"),
+    ]
+    .into_iter()
+    .find(|c| names.contains(c))
+    .or_else(|| (plate == 1).then(|| "Metadata/thumbnail.png".to_string()).filter(|c| names.contains(c)))
+}
+
+pub fn thumbnail(path: &Path, plate: u32) -> anyhow::Result<Vec<u8>> {
+    let mut zip = open(path)?;
+    let names: Vec<String> = entry_names(&zip);
+    let entry = thumbnail_entry(&names, plate).ok_or_else(|| anyhow!("no thumbnail for plate {plate}"))?;
+    read_entry(&mut zip, &entry, 16 * 1024 * 1024).ok_or_else(|| anyhow!("could not read thumbnail"))
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PlateSlice {
+    pub index: u32,
+    pub gcode_entry: Option<String>,
+    pub prediction_secs: Option<u64>,
+    pub weight_g: Option<f64>,
+    pub filaments: Vec<SlicedFilament>,
+    /// Objects on the plate (every copy counts).
+    pub object_count: u32,
+}
+
+/// Read the slicer's per-plate results from a sliced 3MF.
+pub fn slice_results(path: &Path) -> anyhow::Result<(Vec<PlateSlice>, u32)> {
+    let mut zip = open(path)?;
+    let names: Vec<String> = entry_names(&zip);
+    let gcode_entries: Vec<(u32, String)> = names.iter().filter_map(|n| Some((plate_gcode_index(n)?, n.clone()))).collect();
+    let mut plates: Vec<PlateSlice> = Vec::new();
+
+    if let Some(xml) = read_text(&mut zip, "Metadata/slice_info.config") {
+        let root = parse_xml(&xml)?;
+        for config in root.children_named("config") {
+            for plate in config.children_named("plate") {
+                let meta = plate.metadata();
+                let Some(index) = meta.get("index").and_then(|v| v.parse().ok()) else { continue };
+                let filaments = plate
+                    .children_named("filament")
+                    .filter_map(|f| {
+                        Some(SlicedFilament {
+                            id: f.attr("id")?.parse().ok()?,
+                            kind: f.attr("type").unwrap_or("").to_string(),
+                            color: hex_color(f.attr("color").unwrap_or("")),
+                            used_g: f.attr("used_g").and_then(|v| v.parse().ok()).unwrap_or(0.0),
+                            used_m: f.attr("used_m").and_then(|v| v.parse().ok()).unwrap_or(0.0),
+                        })
+                    })
+                    .collect();
+                plates.push(PlateSlice {
+                    index,
+                    gcode_entry: gcode_entries.iter().find(|(i, _)| *i == index).map(|(_, n)| n.clone()),
+                    prediction_secs: meta.get("prediction").and_then(|v| v.parse::<f64>().ok()).map(|v| v as u64),
+                    weight_g: meta.get("weight").and_then(|v| v.parse().ok()),
+                    filaments,
+                    object_count: plate.children_named("object").count() as u32,
+                });
+            }
+        }
+    }
+    // Fallback when slice_info is missing: G-code entries only.
+    for (i, name) in &gcode_entries {
+        if !plates.iter().any(|p| p.index == *i) {
+            plates.push(PlateSlice { index: *i, gcode_entry: Some(name.clone()), ..Default::default() });
+        }
+    }
+    plates.sort_by_key(|p| p.index);
+
+    // Number of filament slots in the project = length of the AMS mapping.
+    let mut slots = 0u32;
+    if let Some(text) = read_text(&mut zip, "Metadata/project_settings.config")
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            slots = json_list(&v, "filament_type").len() as u32;
+        }
+    let max_used = plates.iter().flat_map(|p| p.filaments.iter().map(|f| f.id)).max().unwrap_or(1);
+    Ok((plates, slots.max(max_used)))
+}
+
+/// One project setting, e.g. `curr_bed_type`.
+pub fn project_setting(path: &Path, key: &str) -> Option<String> {
+    let mut zip = open(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&read_text(&mut zip, "Metadata/project_settings.config")?).ok()?;
+    json_list(&v, key).into_iter().next().filter(|s| !s.is_empty())
+}
+
+/// Copies the project at `src` to `dest` with project settings changed:
+/// `drop` keys are removed (also from per-object overrides) so the slicer
+/// falls back to its own defaults, `set` keys get a new value. Every other
+/// entry is copied unchanged.
+pub fn edit_settings(src: &Path, dest: &Path, drop: &[String], set: &[(String, String)]) -> anyhow::Result<()> {
+    rewrite(src, dest, &[PROJECT_SETTINGS, MODEL_SETTINGS], |name, text| {
+        Ok(if name == PROJECT_SETTINGS {
+            let mut v: serde_json::Value = serde_json::from_str(&text).context("reading project settings")?;
+            if let Some(map) = v.as_object_mut() {
+                for k in drop {
+                    map.remove(k);
+                }
+                for (k, value) in set {
+                    map.insert(k.clone(), serde_json::Value::String(value.clone()));
+                }
+            }
+            serde_json::to_vec_pretty(&v)?
+        } else {
+            // One `<metadata key=".." value=".."/>` per line.
+            let kept: Vec<&str> = text
+                .lines()
+                .filter(|l| !drop.iter().any(|k| l.trim_start().starts_with(&format!("<metadata key=\"{k}\""))))
+                .collect();
+            kept.join("\n").into_bytes()
+        })
+    })
+}
+
+/// Copies the project with only the `keep` objects (ids) left on `plate`.
+/// The others stay in the file but no longer belong to the plate, which is
+/// how OrcaSlicer leaves them out (removing their build item breaks loading).
+pub fn keep_plate_objects(src: &Path, dest: &Path, plate: u32, keep: &[String]) -> anyhow::Result<()> {
+    let instance = regex::Regex::new(r#"(?s)\s*<model_instance>.*?</model_instance>"#)?;
+    let object_id = regex::Regex::new(r#"key="object_id" value="([^"]*)""#)?;
+    let plate_block = regex::Regex::new(r#"(?s)<plate>.*?</plate>"#)?;
+    let plate_id = format!(r#"key="plater_id" value="{plate}""#);
+    rewrite(src, dest, &[MODEL_SETTINGS], |_, text| {
+        let edited = plate_block.replace_all(&text, |p: &regex::Captures| {
+            let block = &p[0];
+            if !block.contains(&plate_id) {
+                return block.to_string();
+            }
+            instance
+                .replace_all(block, |m: &regex::Captures| {
+                    let id = object_id.captures(&m[0]).map(|c| c[1].to_string()).unwrap_or_default();
+                    if keep.contains(&id) { m[0].to_string() } else { String::new() }
+                })
+                .into_owned()
+        });
+        Ok(edited.into_owned().into_bytes())
+    })
+}
+
+const PROJECT_SETTINGS: &str = "Metadata/project_settings.config";
+const MODEL_SETTINGS: &str = "Metadata/model_settings.config";
+
+/// Copies a 3MF, passing the named text entries through `edit`; everything
+/// else is copied as it is.
+fn rewrite(src: &Path, dest: &Path, names: &[&str], mut edit: impl FnMut(&str, String) -> anyhow::Result<Vec<u8>>) -> anyhow::Result<()> {
+    let mut zip = open(src)?;
+    let out = std::fs::File::create(dest).with_context(|| format!("creating {}", dest.display()))?;
+    let mut w = zip::ZipWriter::new(out);
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    for i in 0..zip.len() {
+        let name = zip.by_index_raw(i)?.name()?.into_owned();
+        if names.contains(&name.as_str()) {
+            let text = read_text(&mut zip, &name).unwrap_or_default();
+            let data = edit(&name, text)?;
+            w.start_file(name, opts)?;
+            std::io::Write::write_all(&mut w, &data)?;
+        } else {
+            w.raw_copy_file(zip.by_index_raw(i)?)?;
+        }
+    }
+    w.finish()?;
+    Ok(())
+}
+
+/// The settings OrcaSlicer refused, from lines like
+/// `raft_first_layer_expansion: -1 not in range [0,2147483647]`.
+pub fn rejected_settings(slicer_output: &str) -> Vec<String> {
+    let mut keys: Vec<String> = slicer_output
+        .lines()
+        .filter(|l| l.contains(" not in range ["))
+        .filter_map(|l| l.split_once(':').map(|(k, _)| k.trim()))
+        .filter(|k| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        .map(str::to_string)
+        .collect();
+    keys.dedup();
+    keys
+}
+
+/// The slicer's output file (first .3mf in `dir`).
+pub fn find_output(dir: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| {
+        p.extension().map(|e| e.eq_ignore_ascii_case("3mf")).unwrap_or(false)
+    })
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+    use std::io::Write;
+
+    pub fn make_3mf(path: &Path, entries: &[(&str, &[u8])]) {
+        let f = std::fs::File::create(path).unwrap();
+        let mut z = zip::ZipWriter::new(f);
+        for (name, data) in entries {
+            z.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            z.write_all(data).unwrap();
+        }
+        z.finish().unwrap();
+    }
+
+    const MODEL_SETTINGS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <object id="2"><metadata key="name" value="Benchy"/></object>
+  <plate>
+    <metadata key="plater_id" value="1"/>
+    <metadata key="plater_name" value="Hull"/>
+    <metadata key="thumbnail_file" value="Metadata/plate_1.png"/>
+    <model_instance><metadata key="object_id" value="2"/></model_instance>
+  </plate>
+  <plate>
+    <metadata key="plater_id" value="2"/>
+    <metadata key="plater_name" value=""/>
+    <model_instance><metadata key="object_id" value="3"/></model_instance>
+    <model_instance><metadata key="object_id" value="4"/></model_instance>
+  </plate>
+  <plate><metadata key="plater_id" value="3"/></plate>
+</config>"#;
+
+    const SLICE_INFO: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <header><header_item key="X-BBL-Client-Type" value="slicer"/></header>
+  <plate>
+    <metadata key="index" value="2"/>
+    <metadata key="prediction" value="3045"/>
+    <metadata key="weight" value="12.50"/>
+    <object identify_id="1" name="a" skipped="false"/>
+    <filament id="1" tray_info_idx="GFA00" type="PLA" color="#ffffff" used_m="3.98" used_g="11.86"/>
+    <filament id="3" type="PETG" color="#00FF00FF" used_m="0.2" used_g="0.64"/>
+  </plate>
+</config>"##;
+
+    #[test]
+    fn inspects_project() {
+        let dir = std::env::temp_dir().join(format!("as-3mf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("model.3mf");
+        let settings = br##"{"printer_model":"Bambu Lab A1","printer_settings_id":"Bambu Lab A1 0.4 nozzle","filament_type":["PLA","PETG"],"filament_colour":["#FF0000","#00ff00"]}"##;
+        make_3mf(&p, &[
+            ("Metadata/model_settings.config", MODEL_SETTINGS.as_bytes()),
+            ("Metadata/project_settings.config", settings),
+            ("Metadata/plate_1.png", b"png"),
+        ]);
+        let i = inspect(&p).unwrap();
+        assert_eq!(i.kind, "project");
+        assert_eq!(i.plates.len(), 2, "empty plate 3 is dropped");
+        assert_eq!(i.plates[0].name.as_deref(), Some("Hull"));
+        assert!(i.plates[0].has_thumbnail);
+        assert_eq!(i.plates[1].object_count, 2);
+        assert!(!i.plates[1].has_thumbnail);
+        assert_eq!(i.printer_model.as_deref(), Some("Bambu Lab A1"));
+        assert_eq!(i.filaments[1], FilamentInfo { kind: "PETG".into(), color: "#00FF00".into() });
+        assert_eq!(thumbnail(&p, 1).unwrap(), b"png");
+        assert!(thumbnail(&p, 2).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reads_slice_results() {
+        let dir = std::env::temp_dir().join(format!("as-3mf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("out.3mf");
+        make_3mf(&p, &[
+            ("Metadata/slice_info.config", SLICE_INFO.as_bytes()),
+            ("Metadata/plate_2.gcode", b"G28"),
+            ("Metadata/project_settings.config", br#"{"filament_type":["PLA","PLA","PETG","PLA"]}"#),
+        ]);
+        let (plates, slots) = slice_results(&p).unwrap();
+        assert_eq!(slots, 4);
+        assert_eq!(plates.len(), 1);
+        let pl = &plates[0];
+        assert_eq!(pl.index, 2);
+        assert_eq!(pl.gcode_entry.as_deref(), Some("Metadata/plate_2.gcode"));
+        assert_eq!(pl.prediction_secs, Some(3045));
+        assert_eq!(pl.object_count, 1);
+        assert_eq!(pl.filaments.len(), 2);
+        assert_eq!(pl.filaments[0].color, "#FFFFFF");
+        assert_eq!(pl.filaments[1].id, 3);
+        assert_eq!(pl.filaments[1].color, "#00FF00");
+        let i = inspect(&p).unwrap();
+        assert_eq!(i.kind, "sliced");
+        assert_eq!(i.plates.iter().map(|p| p.index).collect::<Vec<_>>(), vec![2]);
+        assert_eq!((i.plates[0].prediction_secs, i.plates[0].weight_g), (Some(3045), Some(12.5)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn edits_project_settings() {
+        // As printed by OrcaSlicer for a Bambu Studio 2.8 project.
+        let out = "Param values in 3mf/config error: \n\
+            raft_first_layer_expansion: -1 not in range [0,2147483647]\n\
+            wall_filament: 0 not in range [1,2147483647]\n\
+            run found error, return -18, exit...";
+        let keys = rejected_settings(out);
+        assert_eq!(keys, vec!["raft_first_layer_expansion", "wall_filament"]);
+
+        let dir = std::env::temp_dir().join(format!("as-3mf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (src, dest) = (dir.join("in.3mf"), dir.join("out.3mf"));
+        let objects = "<config>\n  <object id=\"2\">\n    <metadata key=\"name\" value=\"Rex\"/>\n    <metadata key=\"wall_filament\" value=\"0\"/>\n  </object>\n</config>";
+        make_3mf(&src, &[
+            ("3D/3dmodel.model", b"<model/>"),
+            ("Metadata/project_settings.config", br#"{"raft_first_layer_expansion":"-1","wall_filament":"0","layer_height":"0.2"}"#),
+            ("Metadata/model_settings.config", objects.as_bytes()),
+        ]);
+        edit_settings(&src, &dest, &keys, &[("curr_bed_type".into(), "Textured PEI Plate".into())]).unwrap();
+        let mut z = open(&dest).unwrap();
+        let project: serde_json::Value = serde_json::from_str(&read_text(&mut z, "Metadata/project_settings.config").unwrap()).unwrap();
+        assert_eq!(project, serde_json::json!({ "layer_height": "0.2", "curr_bed_type": "Textured PEI Plate" }));
+        assert_eq!(project_setting(&dest, "curr_bed_type").as_deref(), Some("Textured PEI Plate"));
+        assert_eq!(project_setting(&dest, "nope"), None);
+        let objects = read_text(&mut z, "Metadata/model_settings.config").unwrap();
+        assert!(objects.contains("value=\"Rex\"") && !objects.contains("wall_filament"));
+        assert_eq!(read_text(&mut z, "3D/3dmodel.model").unwrap(), "<model/>");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn keeps_chosen_objects_on_a_plate() {
+        let dir = std::env::temp_dir().join(format!("as-3mf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (src, dest) = (dir.join("in.3mf"), dir.join("out.3mf"));
+        make_3mf(&src, &[("Metadata/model_settings.config", MODEL_SETTINGS.as_bytes())]);
+        let i = inspect(&src).unwrap();
+        let ids: Vec<&str> = i.plates[1].objects.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(ids, vec!["3", "4"]);
+        assert_eq!(i.plates[0].objects[0].name, "Benchy");
+        keep_plate_objects(&src, &dest, 2, &["4".to_string()]).unwrap();
+        let after = inspect(&dest).unwrap();
+        assert_eq!(after.plates[1].objects.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), vec!["4"]);
+        // Other plates are left alone.
+        assert_eq!(after.plates[0].object_count, 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn mesh_is_one_plate() {
+        let i = inspect(Path::new("/nope/part.stl")).unwrap();
+        assert_eq!(i.kind, "mesh");
+        assert_eq!(i.plates.len(), 1);
+    }
+}

@@ -1,0 +1,236 @@
+import { useMemo, useState } from "react";
+import { api } from "./api";
+import { money } from "./Trays";
+import type { Job, Printer } from "./types";
+import { fmtDuration, timeAgo, toast, usePoll, remoteImg } from "./ui";
+import { locale, tr } from "./i18n";
+
+const LABEL: Record<string, string> = {
+  downloading: tr("Downloading"),
+  ready: tr("Waiting for plate choice"),
+  slicing: tr("Slicing"),
+  sliced: tr("Ready to print"),
+  queued: tr("Queued"),
+  waiting: tr("Waiting for the printer"),
+  uploading: tr("Sending"),
+  starting: tr("Starting"),
+  started: tr("Printing"),
+  finished: tr("Printed"),
+  failed: tr("Failed"),
+};
+
+/** Totals over finished prints: count, printing time, filament and cost. */
+function Stats({ jobs }: { jobs: Job[] }) {
+  const [span, setSpan] = useState<"month" | "all">("month");
+  const t = useMemo(() => {
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const from = span === "month" ? monthStart.getTime() / 1000 : 0;
+    let prints = 0, failed = 0, secs = 0, grams = 0, cost = 0;
+    let currency = "";
+    for (const j of jobs) {
+      const p = j.print;
+      if (!p?.ended_at || p.started_at < from) continue;
+      if (p.outcome === "finished") {
+        prints++;
+        grams += j.slice?.weight_g ?? 0;
+      } else if (p.outcome === "failed" || p.outcome === "cancelled") failed++;
+      else continue;
+      secs += Math.max(0, p.ended_at - p.started_at);
+      if (j.cost) {
+        cost += j.cost.total;
+        currency ||= j.cost.currency;
+      }
+    }
+    return { prints, failed, secs, grams, cost, currency };
+  }, [jobs, span]);
+  return (
+    <section className="panel history-stats">
+      <div className="row">
+        <h2 className="grow small" style={{ margin: 0 }}>
+          {span === "month" ? new Date().toLocaleDateString(locale, { month: "long" }).replace(/^./, (c) => c.toUpperCase()) : tr("All kept jobs")}
+        </h2>
+        <div className="segmented" role="group" aria-label={tr("Period")}>
+          <button type="button" aria-pressed={span === "month"} onClick={() => setSpan("month")}>
+            {tr("This month")}
+          </button>
+          <button type="button" aria-pressed={span === "all"} onClick={() => setSpan("all")}>
+            {tr("All")}
+          </button>
+        </div>
+      </div>
+      <div className="temps">
+        <div>
+          <span>{tr("Prints")}</span>
+          <b className="num">{t.prints}</b>
+          {t.failed > 0 && <span className="faint">{tr("{0} stopped or failed", [t.failed])}</span>}
+        </div>
+        <div>
+          <span>{tr("Printing")}</span>
+          <b className="num">{t.secs ? fmtDuration(t.secs) : "–"}</b>
+        </div>
+        <div>
+          <span>{tr("Filament")}</span>
+          <b className="num">{t.grams ? (t.grams >= 1000 ? `${(t.grams / 1000).toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kg` : `${Math.round(t.grams)} g`) : "–"}</b>
+        </div>
+        {t.cost > 0 && (
+          <div>
+            <span>{tr("Cost")}</span>
+            <b className="num">{money({ total: t.cost, currency: t.currency })}</b>
+          </div>
+        )}
+      </div>
+      <a href="#/history/stats" className="small">
+        {tr("More statistics ›")}
+      </a>
+    </section>
+  );
+}
+
+export function HistoryView({ printers, openJob }: { printers: Printer[] | null; openJob: (id: string) => void }) {
+  const [jobs, setJobs] = useState<Job[] | null>(null);
+  const [filter, setFilter] = useState<"all" | "favorites">(() => (localStorage.getItem("history-filter") === "favorites" ? "favorites" : "all"));
+  const choose = (f: "all" | "favorites") => {
+    setFilter(f);
+    try {
+      localStorage.setItem("history-filter", f);
+    } catch {
+      /* private mode */
+    }
+  };
+  const [query, setQuery] = useState("");
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const matches = (j: Job) => {
+    const text = `${j.model_title} ${j.file.name} ${j.plate_label ?? ""}`.toLowerCase();
+    return words.every((w) => text.includes(w));
+  };
+  usePoll(async () => {
+    try {
+      setJobs(await api.get<Job[]>("jobs"));
+    } catch {
+      /* keep last list */
+    }
+  }, 5000);
+
+  async function toggleFavorite(job: Job) {
+    try {
+      const updated = await api.post<Job>(`jobs/${job.id}/favorite`, { favorite: !job.favorite });
+      setJobs((list) => list?.map((j) => (j.id === job.id ? { ...j, favorite: updated.favorite } : j)) ?? null);
+    } catch (e) {
+      toast((e as Error).message);
+    }
+  }
+
+  async function remove(job: Job) {
+    try {
+      await api.del(`jobs/${job.id}`);
+      setJobs((j) => j?.filter((x) => x.id !== job.id) ?? null);
+    } catch (e) {
+      toast((e as Error).message);
+    }
+  }
+
+  return (
+    <main className="page">
+      <div className="row">
+        <h1 className="page-title grow">{tr("History")}</h1>
+        <div className="segmented" role="group" aria-label={tr("Show")}>
+          <button type="button" aria-pressed={filter === "all"} onClick={() => choose("all")}>
+            {tr("All")}
+          </button>
+          <button type="button" aria-pressed={filter === "favorites"} onClick={() => choose("favorites")}>
+            {tr("Favourites")}
+          </button>
+        </div>
+      </div>
+      {jobs && jobs.some((j) => j.print?.ended_at) && <Stats jobs={jobs} />}
+      {jobs && jobs.length > 3 && (
+        <input
+          className="input history-search"
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={tr("Search by name")}
+          aria-label={tr("Search the history")}
+          autoCapitalize="off"
+        />
+      )}
+      {jobs && words.length > 0 && !jobs.some((j) => (filter === "all" || j.favorite) && matches(j)) && (
+        <p className="faint" style={{ textAlign: "center" }}>
+          {tr("Nothing matches “{0}”.", [query])}
+        </p>
+      )}
+      {jobs && filter === "favorites" && jobs.every((j) => !j.favorite) && (
+        <div className="empty panel">
+          <p>{tr("No favourites yet.")}</p>
+          <p className="faint">{tr("Tap the star on a job to keep it here, ready to print again.")}</p>
+        </div>
+      )}
+      {jobs && jobs.length === 0 && filter === "all" && (
+        <div className="empty panel">
+          <p>{tr("Nothing printed yet.")}</p>
+          <a className="btn primary" href="#/">
+            {tr("Print a model")}
+          </a>
+        </div>
+      )}
+      <ul className="files">
+        {jobs?.filter((j) => (filter === "all" || j.favorite) && matches(j)).map((j) => {
+          const printer = printers?.find((p) => p.id === (j.print?.printer_id ?? j.slice?.printer_id));
+          const bits = [LABEL[j.state] ?? j.state];
+          if (j.plate_label) bits.unshift(j.plate_label[0].toUpperCase() + j.plate_label.slice(1));
+          if (printer) bits.push(printer.name);
+          if (j.slice?.prediction_secs) bits.push(fmtDuration(j.slice.prediction_secs));
+          if (j.cost) bits.push(money(j.cost));
+          if (j.files_removed) bits.push(tr("files removed"));
+          bits.push(timeAgo(j.created_at));
+          return (
+            <li key={j.id} style={{ position: "relative" }}>
+              <button className="file" onClick={() => openJob(j.id)} type="button">
+                {j.photo ? (
+                  <img src={`api/jobs/${j.id}/photo.jpg`} alt="" loading="lazy" />
+                ) : j.model_cover ? (
+                  <img src={remoteImg(j.model_cover)} alt="" loading="lazy" />
+                ) : j.inspection?.plates.find((p) => p.has_thumbnail) ? (
+                  <img
+                    className="plate-cover"
+                    src={`api/jobs/${j.id}/plates/${(j.slice && j.inspection.plates.find((p) => p.index === j.slice!.plate && p.has_thumbnail)?.index) || j.inspection.plates.find((p) => p.has_thumbnail)!.index}/thumbnail`}
+                    alt=""
+                    loading="lazy"
+                  />
+                ) : (
+                  <div className="thumb-ph">{j.file.kind.toUpperCase()}</div>
+                )}
+                <div style={{ minWidth: 0, paddingRight: 84 }}>
+                  <div className="file-name ellipsis">{j.model_title}</div>
+                  <div className="file-meta">{bits.join(", ")}</div>
+                  {j.state === "failed" && j.error && (
+                    <div className="faint ellipsis" style={{ color: "var(--err)" }}>
+                      {j.error}
+                    </div>
+                  )}
+                </div>
+              </button>
+              <div className="history-actions">
+                <button
+                  className="btn ghost small star"
+                  aria-pressed={j.favorite}
+                  onClick={() => toggleFavorite(j)}
+                  aria-label={j.favorite ? tr("Remove {0} from favourites", [j.model_title]) : tr("Save {0} as favourite", [j.model_title])}
+                >
+                  {j.favorite ? "★" : "☆"}
+                </button>
+                {!["downloading", "slicing", "uploading", "starting", "waiting"].includes(j.state) && !j.favorite && (
+                  <button className="btn ghost small" onClick={() => remove(j)} aria-label={tr("Remove {0} from history", [j.model_title])}>
+                    ✕
+                  </button>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </main>
+  );
+}

@@ -1,0 +1,21 @@
+services:
+  airslice:
+    build: .
+    image: airslice:latest
+    container_name: airslice
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - airslice-data:/data
+    environment:
+      TZ: Europe/Stockholm
+      # Serve under a sub-path behind a reverse proxy, e.g. https://home.example.com/airslice/
+      # BASE_PATH: /airslice
+      # Fix the admin password instead of setting it on first visit:
+      # ADMIN_PASSWORD: change-me
+      # Force the Secure cookie flag (auto-detected from X-Forwarded-Proto otherwise):
+      # COOKIE_SECURE: "true"
+
+volumes:
+  airslice-data:

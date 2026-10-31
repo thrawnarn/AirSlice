@@ -1,0 +1,48 @@
+name: AirSlice
+version: "0.1.0"
+slug: airslice
+description: Print MakerWorld, Printables and Thingiverse models on your offline Bambu Lab printer
+url: https://github.com/thrawnarn/AirSlice
+# Pulled ready-made (multi-arch) instead of built on the host, so Home
+# Assistant backups don't carry the ~1 GB image. The tag is `version`.
+image: ghcr.io/thrawnarn/airslice
+arch:
+  - amd64
+  - aarch64
+# The image brings its own init (tini).
+init: false
+startup: application
+boot: auto
+ingress: true
+# Notifications go through Home Assistant's notify services; the add-on's own
+# info gives the panel link opened from a notification.
+homeassistant_api: true
+hassio_api: true
+# Pictures for Home Assistant notifications (plate renders, the printer's own
+# camera) go in /media/airslice, which the companion app loads.
+map:
+  - media:rw
+ingress_port: 8080
+panel_icon: mdi:printer-3d
+panel_title: AirSlice
+# Off by default: the Home Assistant panel needs no open port. Enable it for
+# the phone home-screen app, shared links and access from outside HA.
+ports:
+  8080/tcp: null
+ports_description:
+  8080/tcp: Direct access (phone app, shared links, API). Leave empty to use only the Home Assistant panel.
+# Downloaded and sliced models can be large and are disposable.
+backup_exclude:
+  - "jobs/*"
+  - "cache/*"
+  - "orca-home/*"
+options:
+  log_level: info
+  admin_password: ""
+  slice_timeout: 900
+  max_jobs: 50
+schema:
+  log_level: list(trace|debug|info|warning|error)
+  admin_password: password?
+  slice_timeout: int(60,7200)
+  max_jobs: int(5,500)

@@ -1,0 +1,6 @@
+node_modules/
+frontend/dist/
+backend/target/
+data/
+tools/fake-printer/out/
+tools/fake-printer/*.pem

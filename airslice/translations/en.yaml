@@ -1,0 +1,17 @@
+configuration:
+  log_level:
+    name: Log level
+    description: How much detail to write to the add-on log.
+  admin_password:
+    name: Password for direct access
+    description: >-
+      Optional. Used when AirSlice is opened on its own port (phone home screen, shared links).
+      Leave empty to set it in AirSlice under Settings instead. Not needed for the Home Assistant panel.
+  slice_timeout:
+    name: Slicing time limit (seconds)
+    description: Stop slicing a model that takes longer than this.
+  max_jobs:
+    name: Jobs to keep
+    description: How many past prints to keep in History. Older downloaded and sliced files are deleted.
+network:
+  8080/tcp: Direct access (phone app, shared links, API). Leave empty to use only the Home Assistant panel.

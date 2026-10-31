@@ -1,0 +1,72 @@
+# Builds the AirSlice image for amd64 and arm64 and publishes it to
+# GitHub Container Registry. The Home Assistant add-on builds on top of it.
+#
+# Run it by pushing a tag (v0.1.0) or from the Actions tab. Afterwards make
+# the package public (Packages → airslice → Package settings) so Home
+# Assistant can pull it without credentials.
+name: Image
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/airslice
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read version
+        id: v
+        run: |
+          echo "version=$(grep -E '^version:' airslice/config.yaml | sed -E 's/version: *"?([^"]*)"?/\1/')" >> "$GITHUB_OUTPUT"
+          echo "image=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          tags: ${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+  manifest:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read version
+        id: v
+        run: |
+          echo "version=$(grep -E '^version:' airslice/config.yaml | sed -E 's/version: *"?([^"]*)"?/\1/')" >> "$GITHUB_OUTPUT"
+          echo "image=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Multi-arch tags
+        run: |
+          I=${{ steps.v.outputs.image }}; V=${{ steps.v.outputs.version }}
+          docker buildx imagetools create -t "$I:$V" -t "$I:latest" "$I:$V-amd64" "$I:$V-arm64"
