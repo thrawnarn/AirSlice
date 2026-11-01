@@ -367,6 +367,19 @@ label.field > small { display: block; color: var(--ink-3); font-size: 13px; marg
 .next-plate { margin-bottom: 14px; }
 .history-actions { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: flex; gap: 2px; }
 .history-actions .star { margin: 0; padding: 6px 10px; font-size: 18px; }
+.history-text { min-width: 0; padding-right: 84px; }
+/* Touch screens remove by swiping; the button stays for screen readers only. */
+@media (hover: none) and (pointer: coarse) {
+  .history-text { padding-right: 44px; }
+  .btn.small.history-remove { position: absolute; width: 1px; height: 1px; min-height: 0; padding: 0; overflow: hidden; clip-path: inset(50%); }
+}
+.swipe-row { position: relative; margin-bottom: 8px; border-radius: var(--radius-m); overflow: hidden; touch-action: pan-y; }
+.swipe-row .file { margin-bottom: 0; }
+.swipe-behind { position: absolute; inset: 0; display: flex; align-items: center; padding-left: 20px; background: var(--err-soft); color: var(--err); font-weight: 620; transition: background 0.12s, color 0.12s; }
+.swipe-behind.armed { background: var(--err); color: var(--panel); }
+.swipe-content { position: relative; transition: transform 0.18s ease; }
+.swipe-content.dragging { transition: none; }
+@media (prefers-reduced-motion: reduce) { .swipe-content, .swipe-behind { transition: none; } }
 .star { padding-left: 0; margin-top: 4px; min-height: 32px; color: var(--ink-2); }
 .star[aria-pressed="true"] { color: var(--plate); }
 

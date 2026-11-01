@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- History on a phone: swipe a job to the right to remove it. On a computer the ✕ button stays and now asks first.
+- Unlinking the Bambu Lab account or removing the Thingiverse token asks first.
+
 ## 0.1.1
 
 - A job from MakerWorld, Printables or Thingiverse links to its other files ("Other files", "Other print profiles") and to the original page. On the model page, files you printed before are marked, and a file you haven't printed is picked first.

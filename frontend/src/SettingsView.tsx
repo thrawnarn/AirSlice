@@ -220,12 +220,13 @@ function BambuAccount() {
             <p className="faint">{tr("Only used to download files from MakerWorld (it only lets signed-in users download). AirSlice keeps the sign-in token, not your password. Your printer stays offline.")}</p>
             <button
               className="btn small"
-              onClick={() =>
+              onClick={() => {
+                if (!window.confirm(tr("Unlink your Bambu Lab account? MakerWorld downloads stop working until you sign in again."))) return;
                 run(async () => {
                   await api.del("bambu");
                   load();
-                })
-              }
+                });
+              }}
             >
               {tr("Unlink account")}
             </button>
@@ -622,7 +623,14 @@ function Thingiverse() {
         {hasToken ? (
           <>
             <p>{tr("Token saved. Thingiverse links work.")}</p>
-            <button className="btn small" disabled={busy} onClick={() => run(() => api.del("settings/thingiverse"), tr("Token removed"))}>
+            <button
+              className="btn small"
+              disabled={busy}
+              onClick={() => {
+                if (!window.confirm(tr("Remove the Thingiverse token? Thingiverse links stop working until you add a new one."))) return;
+                run(() => api.del("settings/thingiverse"), tr("Token removed"));
+              }}
+            >
               {tr("Remove token")}
             </button>
           </>

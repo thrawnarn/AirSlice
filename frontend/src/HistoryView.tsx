@@ -1,9 +1,11 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { api } from "./api";
 import { money } from "./Trays";
 import type { Job, Printer } from "./types";
 import { fmtDuration, timeAgo, toast, usePoll, remoteImg } from "./ui";
 import { locale, tr } from "./i18n";
+
+const SWIPE_REMOVE_AT = 1 / 3;
 
 const LABEL: Record<string, string> = {
   downloading: tr("Downloading"),
@@ -88,6 +90,87 @@ function Stats({ jobs }: { jobs: Job[] }) {
   );
 }
 
+/** A history row: on touch screens, swiping it to the right past a third of its width removes it. */
+function SwipeRow({ enabled, onRemove, children }: { enabled: boolean; onRemove: () => Promise<void>; children: ReactNode }) {
+  const [dx, setDx] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  // What's behind the row stays until the row has slid back over it.
+  const [showBehind, setShowBehind] = useState(false);
+  const drag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+  const width = useRef(0);
+  // The browser still sends a click when the finger lifts; a swipe mustn't also open the job.
+  const swiped = useRef(false);
+
+  function down(e: PointerEvent<HTMLLIElement>) {
+    swiped.current = false;
+    if (!enabled || e.pointerType !== "touch" || !e.isPrimary) return;
+    drag.current = { x: e.clientX, y: e.clientY, moved: false };
+    width.current = e.currentTarget.offsetWidth;
+  }
+  function move(e: PointerEvent<HTMLLIElement>) {
+    const d = drag.current;
+    if (!d) return;
+    const mx = e.clientX - d.x;
+    const my = e.clientY - d.y;
+    if (!d.moved) {
+      if (Math.abs(mx) < 10 && Math.abs(my) < 10) return;
+      if (mx <= 0 || Math.abs(my) >= Math.abs(mx)) {
+        drag.current = null;
+        return;
+      }
+      d.moved = swiped.current = true;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setDragging(true);
+      setShowBehind(true);
+    }
+    setDx(Math.max(0, mx));
+  }
+  async function up(e: PointerEvent<HTMLLIElement>) {
+    const d = drag.current;
+    drag.current = null;
+    if (!d?.moved) return;
+    setDragging(false);
+    if (e.clientX - d.x < width.current * SWIPE_REMOVE_AT) return setDx(0);
+    setDx(width.current);
+    await onRemove();
+    setDx(0); // still here only if removing failed
+  }
+  function cancel() {
+    drag.current = null;
+    setDragging(false);
+    setDx(0);
+  }
+
+  return (
+    <li
+      className="swipe-row"
+      onPointerDown={down}
+      onPointerMove={move}
+      onPointerUp={up}
+      onPointerCancel={cancel}
+      onClickCapture={(e) => {
+        if (!swiped.current) return;
+        swiped.current = false;
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+    >
+      {showBehind && (
+        <div className={`swipe-behind${dx >= width.current * SWIPE_REMOVE_AT ? " armed" : ""}`} aria-hidden="true">
+          {tr("Remove")}
+        </div>
+      )}
+      <div
+        className={`swipe-content${dragging ? " dragging" : ""}`}
+        style={dx > 0 ? { transform: `translateX(${dx}px)` } : undefined}
+        onTransitionEnd={(e) => e.target === e.currentTarget && dx === 0 && setShowBehind(false)}
+      >
+        {children}
+      </div>
+    </li>
+  );
+}
+
 export function HistoryView({ printers, openJob }: { printers: Printer[] | null; openJob: (id: string) => void }) {
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [filter, setFilter] = useState<"all" | "favorites">(() => (localStorage.getItem("history-filter") === "favorites" ? "favorites" : "all"));
@@ -130,6 +213,8 @@ export function HistoryView({ printers, openJob }: { printers: Printer[] | null;
       toast((e as Error).message);
     }
   }
+
+  const removable = (j: Job) => !["downloading", "slicing", "uploading", "starting", "waiting"].includes(j.state) && !j.favorite;
 
   return (
     <main className="page">
@@ -186,7 +271,7 @@ export function HistoryView({ printers, openJob }: { printers: Printer[] | null;
           if (j.files_removed) bits.push(tr("files removed"));
           bits.push(timeAgo(j.created_at));
           return (
-            <li key={j.id} style={{ position: "relative" }}>
+            <SwipeRow key={j.id} enabled={removable(j)} onRemove={() => remove(j)}>
               <button className="file" onClick={() => openJob(j.id)} type="button">
                 {/* The model's own picture first: the camera's photo of the result is often dark and blurry. */}
                 {j.model_cover ? (
@@ -203,7 +288,7 @@ export function HistoryView({ printers, openJob }: { printers: Printer[] | null;
                 ) : (
                   <div className="thumb-ph">{j.file.kind.toUpperCase()}</div>
                 )}
-                <div style={{ minWidth: 0, paddingRight: 84 }}>
+                <div className="history-text">
                   <div className="file-name ellipsis">{j.model_title}</div>
                   <div className="file-meta">{bits.join(", ")}</div>
                   {j.state === "failed" && j.error && (
@@ -222,13 +307,17 @@ export function HistoryView({ printers, openJob }: { printers: Printer[] | null;
                 >
                   {j.favorite ? "★" : "☆"}
                 </button>
-                {!["downloading", "slicing", "uploading", "starting", "waiting"].includes(j.state) && !j.favorite && (
-                  <button className="btn ghost small" onClick={() => remove(j)} aria-label={tr("Remove {0} from history", [j.model_title])}>
+                {removable(j) && (
+                  <button
+                    className="btn ghost small history-remove"
+                    onClick={() => window.confirm(tr("Remove “{0}” from the history? Its files are deleted too.", [j.model_title])) && remove(j)}
+                    aria-label={tr("Remove {0} from history", [j.model_title])}
+                  >
                     ✕
                   </button>
                 )}
               </div>
-            </li>
+            </SwipeRow>
           );
         })}
       </ul>
