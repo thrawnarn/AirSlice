@@ -90,7 +90,7 @@ function Stats({ jobs }: { jobs: Job[] }) {
   );
 }
 
-/** A history row: on touch screens, swiping it to the right past a third of its width removes it. */
+/** A history row: on touch screens, swiping it to the left past a third of its width removes it. */
 function SwipeRow({ enabled, onRemove, children }: { enabled: boolean; onRemove: () => Promise<void>; children: ReactNode }) {
   const [dx, setDx] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -112,7 +112,7 @@ function SwipeRow({ enabled, onRemove, children }: { enabled: boolean; onRemove:
   function move(e: PointerEvent<HTMLLIElement>) {
     const d = drag.current;
     if (d?.id !== e.pointerId) return;
-    const mx = e.clientX - d.x;
+    const mx = d.x - e.clientX; // distance to the left
     const my = e.clientY - d.y;
     if (!d.moved) {
       if (Math.abs(mx) < 10 && Math.abs(my) < 10) return;
@@ -133,7 +133,7 @@ function SwipeRow({ enabled, onRemove, children }: { enabled: boolean; onRemove:
     drag.current = null;
     if (!d.moved) return;
     setDragging(false);
-    if (e.clientX - d.x < width.current * SWIPE_REMOVE_AT) return setDx(0);
+    if (d.x - e.clientX < width.current * SWIPE_REMOVE_AT) return setDx(0);
     setDx(width.current);
     await onRemove();
     setDx(0); // still here only if removing failed
@@ -166,7 +166,7 @@ function SwipeRow({ enabled, onRemove, children }: { enabled: boolean; onRemove:
       )}
       <div
         className={`swipe-content${dragging ? " dragging" : ""}`}
-        style={dx > 0 ? { transform: `translateX(${dx}px)` } : undefined}
+        style={dx > 0 ? { transform: `translateX(${-dx}px)` } : undefined}
         onTransitionEnd={(e) => e.target === e.currentTarget && dx === 0 && setShowBehind(false)}
       >
         {children}

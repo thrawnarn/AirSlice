@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- History on a phone: swipe a job to the left to remove it, instead of to the right.
+
 ## 0.1.3
 
 - Changing an AMS HT's filament or re-reading its RFID tag now goes to the right unit.

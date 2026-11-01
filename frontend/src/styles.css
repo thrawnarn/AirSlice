@@ -375,7 +375,7 @@ label.field > small { display: block; color: var(--ink-3); font-size: 13px; marg
 }
 .swipe-row { position: relative; margin-bottom: 8px; border-radius: var(--radius-m); overflow: hidden; touch-action: pan-y; }
 .swipe-row .file { margin-bottom: 0; }
-.swipe-behind { position: absolute; inset: 0; display: flex; align-items: center; padding-left: 20px; background: var(--err-soft); color: var(--err); font-weight: 620; transition: background 0.12s, color 0.12s; }
+.swipe-behind { position: absolute; inset: 0; display: flex; align-items: center; justify-content: flex-end; padding-right: 20px; background: var(--err-soft); color: var(--err); font-weight: 620; transition: background 0.12s, color 0.12s; }
 .swipe-behind.armed { background: var(--err); color: var(--panel); }
 .swipe-content { position: relative; transition: transform 0.18s ease; }
 .swipe-content.dragging { transition: none; }
