@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.3
 
 - Changing an AMS HT's filament or re-reading its RFID tag now goes to the right unit.
 - A job that's printing can't be removed from the history, by swipe or ✕, so its result isn't lost. A second finger on a row no longer counts as a swipe.
