@@ -6,7 +6,7 @@ import { TrayPicker, TraysSheet, loadedTrays, money, plateName, spoolLine, usePl
 import { TweakPicker, cleanTweaks, describeTweaks } from "./Tweaks";
 import { CameraView, Notice, Sheet, Spool, fmtLeft, trayLabel, fmtDuration, fmtMinutes, isBusy, printerState, toast, usePoll, remoteImg } from "./ui";
 import { locale, tr } from "./i18n";
-import { ModelPanel, shortModel } from "./ModelView";
+import { ModelPanel, SOURCE_NAMES, shortModel } from "./ModelView";
 import { QueueBoard } from "./Queue";
 
 const PlatePreview = lazy(() => import("./PlatePreview"));
@@ -270,6 +270,16 @@ function JobFlow({ id, printers, reset, openJob }: { id: string; printers: Print
             {job.plate_label ? `${job.plate_label[0].toUpperCase()}${job.plate_label.slice(1)}, ` : ""}
             {job.file.name}
           </p>
+          {job.source !== "upload" && job.model_url && (
+            <p className="model-links small">
+              <a href={`#/explore/model?u=${encodeURIComponent(job.model_url)}`}>
+                {job.source === "makerworld" ? tr("Other print profiles") : tr("Other files")}
+              </a>
+              <a href={job.model_url} target="_blank" rel="noreferrer">
+                {tr("Open on {0} ↗", [SOURCE_NAMES[job.source] ?? job.source])}
+              </a>
+            </p>
+          )}
           {job.inspection && (
             <button
               type="button"

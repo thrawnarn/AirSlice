@@ -474,6 +474,22 @@ fn picture_kind(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// A model site's picture for a notification. MakerWorld's resizer only
+/// answers in WebP, which iPhones don't show in notifications, so its
+/// original is fetched instead.
+pub async fn site_picture(url: &str) -> anyhow::Result<crate::notify::Picture> {
+    let mut parsed = url::Url::parse(url)?;
+    if parsed.scheme() != "https" {
+        anyhow::bail!("not an https address");
+    }
+    if is_makerworld_picture(&parsed) {
+        parsed.set_query(None);
+    }
+    let bytes = fetch_picture(parsed.as_str()).await?;
+    let mime = picture_kind(&bytes).ok_or_else(|| anyhow::anyhow!("not a picture"))?;
+    Ok(crate::notify::Picture { bytes: std::sync::Arc::new(bytes), mime })
+}
+
 /// Fetch a picture without following redirects (they could leave
 /// MakerWorld's hosts) and without buffering more than `MAX_PICTURE`.
 async fn fetch_picture(url: &str) -> anyhow::Result<Vec<u8>> {

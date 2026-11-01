@@ -1,5 +1,5 @@
 mod auth;
-mod jobs;
+pub(crate) mod jobs;
 mod printers;
 mod settings;
 

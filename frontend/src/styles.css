@@ -256,6 +256,8 @@ label.field > small { display: block; color: var(--ink-3); font-size: 13px; marg
 /* ------------------------------------------------------------ model */
 
 .model-head { display: grid; grid-template-columns: 88px 1fr; gap: 14px; align-items: center; margin: 22px 0 8px; }
+.model-links { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 4px 0 0; }
+.model-links a { color: var(--ink-2); }
 .model-head img, .cover-ph {
   width: 88px; height: 88px; object-fit: cover; border-radius: var(--radius-m); background: var(--panel-2);
 }

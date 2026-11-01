@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import type { Job, ModelFile, Printer, ResolvedModel } from "./types";
 import { Notice, Spool, fmtDuration, fmtSize, remoteImg } from "./ui";
@@ -16,12 +16,41 @@ function count(n: number) {
 
 /** A model: pictures, facts, description, then its files and Print. Used on
  * the print page after a link and on a model's own page (Explore). */
+/** How often each file of this model was printed (from the history). */
+function usePrinted(model: ResolvedModel): Map<string, number> | null {
+  const [printed, setPrinted] = useState<Map<string, number> | null>(null);
+  useEffect(() => {
+    api.get<Job[]>("jobs?limit=1000").then(
+      (jobs) => {
+        const m = new Map<string, number>();
+        for (const j of jobs) {
+          if (j.source === model.source && j.model_id === model.model_id && (j.state === "finished" || j.state === "started")) m.set(j.file.id, (m.get(j.file.id) ?? 0) + 1);
+        }
+        setPrinted(m);
+      },
+      () => setPrinted(new Map()),
+    );
+  }, [model.source, model.model_id]);
+  return printed;
+}
+
 export function ModelPanel({ model, defaultPrinter, openJob }: { model: ResolvedModel; defaultPrinter: Printer | null; openJob: (id: string) => void }) {
+  const mine = shortModel(defaultPrinter?.printer_model);
   const [picked, setPicked] = useState<string | null>(() => {
-    const mine = shortModel(defaultPrinter?.printer_model);
     const forMine = model.files.find((f) => shortModel(f.printer) === mine);
     return model.preselected_file_id ?? forMine?.id ?? model.files[0]?.id ?? null;
   });
+  const printed = usePrinted(model);
+  const touched = useRef(false);
+  // Coming back to a model (say from the history) is usually for another
+  // file: move the first choice off one that was printed already.
+  useEffect(() => {
+    if (!printed || touched.current || !picked || !printed.has(picked)) return;
+    const rest = model.files.filter((f) => !printed.has(f.id));
+    const next = rest.find((f) => shortModel(f.printer) === mine) ?? rest[0];
+    if (next) setPicked(next.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [printed]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,7 +101,16 @@ export function ModelPanel({ model, defaultPrinter, openJob }: { model: Resolved
           <ul className="files">
             {model.files.map((f) => (
               <li key={f.id}>
-                <FileRow file={f} selected={picked === f.id} onSelect={() => setPicked(f.id)} printer={defaultPrinter} />
+                <FileRow
+                  file={f}
+                  selected={picked === f.id}
+                  onSelect={() => {
+                    touched.current = true;
+                    setPicked(f.id);
+                  }}
+                  printer={defaultPrinter}
+                  printed={printed?.get(f.id) ?? 0}
+                />
               </li>
             ))}
           </ul>
@@ -177,7 +215,7 @@ function groups(blocks: { kind: string; text: string }[]): { kind: string; items
   return out;
 }
 
-export function FileRow({ file, selected, onSelect, printer }: { file: ModelFile; selected: boolean; onSelect: () => void; printer: Printer | null }) {
+export function FileRow({ file, selected, onSelect, printer, printed = 0 }: { file: ModelFile; selected: boolean; onSelect: () => void; printer: Printer | null; printed?: number }) {
   const mine = shortModel(printer?.printer_model);
   const madeForMine = !!mine && shortModel(file.printer) === mine;
   const compatible = !!mine && file.compatible.some((c) => shortModel(c) === mine);
@@ -197,6 +235,7 @@ export function FileRow({ file, selected, onSelect, printer }: { file: ModelFile
         <div className="row wrap" style={{ gap: 6, marginTop: 6 }}>
           {madeForMine && <span className="tag match">{tr("Made for your printer")}</span>}
           {!madeForMine && compatible && <span className="tag match">{tr("Compatible")}</span>}
+          {printed > 0 && <span className="tag">{printed === 1 ? tr("Printed") : tr("Printed {0} times", [printed])}</span>}
           {file.need_ams && <span className="tag">{tr("Needs AMS")}</span>}
           {file.filaments.length > 0 && (
             <span className="row" style={{ gap: 2 }} aria-label={tr("{0} filaments", [file.filaments.length])}>

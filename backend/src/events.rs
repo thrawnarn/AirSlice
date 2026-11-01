@@ -57,6 +57,11 @@ fn plate_picture(state: &Shared, job: &Job) -> Option<(String, std::path::PathBu
     has.then(|| (job.id.clone(), crate::jobs::job_dir(state, &job.id).join(file), plate))
 }
 
+/// The model site's pictures of a job: the chosen file's own, then the model's.
+fn site_pictures(job: &Job) -> Vec<String> {
+    [job.file.thumbnail.clone(), job.model_cover.clone()].into_iter().flatten().filter(|u| u.starts_with("https://")).collect()
+}
+
 /// Estimated cost from the slice and the trays it was sent with.
 async fn estimate(state: &Shared, job: &Job) -> Option<Cost> {
     let (slice, print) = (job.slice.as_ref()?, job.print.as_ref()?);
@@ -97,7 +102,7 @@ pub async fn sliced(state: &Shared, job: &Job) {
         };
         (t(l, "Sliced, ready to print", &[]), body)
     });
-    notify::send_with_pictures(state, |s| s.sliced, text, Pictures { plate: plate_picture(state, job), ..Default::default() });
+    notify::send_with_pictures(state, |s| s.sliced, text, Pictures { plate: plate_picture(state, job), site: site_pictures(job), ..Default::default() });
 }
 
 async fn printer_of(state: &Shared, job: &Job) -> Option<crate::models::Printer> {
@@ -128,7 +133,9 @@ pub async fn print_started(state: &Shared, job: &Job) {
         }
         (t(l, "Printing on {0}", &[&printer]), lines.join("\n"))
     });
-    let pics = Pictures { camera: printer_of(state, job).await, plate: plate_picture(state, job), both: true };
+    // The plate render or the model's picture: at the start the camera only
+    // shows an empty bed.
+    let pics = Pictures { plate: plate_picture(state, job), site: site_pictures(job), ..Default::default() };
     notify::send_with_pictures(state, |s| s.printing, text, pics);
 }
 
@@ -154,7 +161,7 @@ pub async fn first_layer(state: &Shared, job: &Job) {
         }
         (t(l, "First layer done on {0}", &[&printer]), lines.join("\n"))
     });
-    let pics = Pictures { camera: p, plate: plate_picture(state, job), both: false };
+    let pics = Pictures { camera: p, plate: plate_picture(state, job), both: false, site: Vec::new() };
     notify::send_with_pictures(state, |s| s.first_layer, text, pics);
 }
 
@@ -226,7 +233,7 @@ pub async fn print_ended(state: &Shared, job: &Job) {
         }
         (t(l, head, &[&who]), lines.join("\n"))
     });
-    let pics = Pictures { camera: printer_of_job.clone(), plate: plate_picture(state, job), both: true };
+    let pics = Pictures { camera: printer_of_job.clone(), plate: plate_picture(state, job), both: true, site: Vec::new() };
     notify::send_with_pictures(state, |s| s.finished, text, pics);
     // The printer is free: prints queued for its type wait for a person to
     // clear the plate (any printer of the type can take them).
@@ -246,7 +253,7 @@ pub async fn print_ended(state: &Shared, job: &Job) {
         })
         .await;
     if let Some(next) = next {
-        let pics = Pictures { camera: printer_of_job, plate: plate_picture(state, &next), both: true };
+        let pics = Pictures { camera: printer_of_job, plate: plate_picture(state, &next), both: true, site: site_pictures(&next) };
         let next_name = title(&next);
         let next_time = next.slice.as_ref().and_then(|s| s.prediction_secs).map(fmt_duration);
         let all = (waiting > 1 && total > 0).then(|| fmt_duration(total));
@@ -277,7 +284,7 @@ pub async fn problem(state: &Shared, job: &Job) {
     }
     // A picture of the printer helps when it went wrong there.
     let on_printer = job.print.is_some();
-    let pics = Pictures { camera: if on_printer { printer_of(state, job).await } else { None }, plate: plate_picture(state, job), both: false };
+    let pics = Pictures { camera: if on_printer { printer_of(state, job).await } else { None }, plate: plate_picture(state, job), both: false, site: Vec::new() };
     let (name, error) = (title(job), job.error.clone());
     let text: notify::Text = Box::new(move |l| {
         (t(l, "Problem with {0}", &[&name]), error.clone().unwrap_or_else(|| t(l, "Something went wrong", &[])))

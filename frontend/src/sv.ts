@@ -828,4 +828,8 @@ export const sv: Record<string, string> = {
   "Start “{0}” on {1}? Make sure the build plate is clear.": "Starta ”{0}” på {1}? Se till att byggplattan är tom.",
   "Starting on {0}": "Startar på {0}",
   "Start on {0}": "Starta på {0}",
+  "Other print profiles": "Andra utskriftsprofiler",
+  "Other files": "Andra filer",
+  "Open on {0} ↗": "Öppna på {0} ↗",
+  "Printed {0} times": "Utskriven {0} gånger",
 };

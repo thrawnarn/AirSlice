@@ -55,23 +55,28 @@ async fn open_url(state: &Shared, s: &NotifySettings) -> Option<String> {
     Some(format!("/hassio/ingress/{slug}"))
 }
 
-/// A picture to attach: JPEG from a camera or PNG of a plate.
+/// A picture to attach: JPEG from a camera, PNG of a plate, or the model
+/// site's own picture (JPEG, PNG or WebP).
 #[derive(Clone)]
 pub struct Picture {
     pub bytes: std::sync::Arc<Vec<u8>>,
-    pub png: bool,
+    /// `image/jpeg`, `image/png` or `image/webp`.
+    pub mime: &'static str,
 }
 
 impl Picture {
     pub(crate) fn mime(&self) -> &'static str {
-        if self.png { "image/png" } else { "image/jpeg" }
+        self.mime
     }
     fn file_name(&self, i: usize) -> String {
-        let kind = if self.png { "plate" } else { "printer" };
-        if i == 0 { format!("{kind}.{}", self.ext()) } else { format!("{kind}-{i}.{}", self.ext()) }
+        if i == 0 { format!("picture.{}", self.ext()) } else { format!("picture-{i}.{}", self.ext()) }
     }
     fn ext(&self) -> &'static str {
-        if self.png { "png" } else { "jpg" }
+        match self.mime {
+            "image/png" => "png",
+            "image/webp" => "webp",
+            _ => "jpg",
+        }
     }
 }
 
@@ -240,6 +245,9 @@ pub struct Pictures {
     pub plate: Option<(String, PathBuf, u32)>,
     /// Attach the plate render even when there is a camera picture.
     pub both: bool,
+    /// Pictures from the model site, tried in turn when there is no plate
+    /// render (a mesh sliced on the server has none).
+    pub site: Vec<String>,
 }
 
 /// Home Assistant's media folder, mapped into the add-on (`map: media:rw`).
@@ -298,7 +306,7 @@ pub fn send_with_pictures(state: &Shared, wanted: impl Fn(&NotifyTarget) -> bool
         let mut photos = Vec::new();
         if let Some(p) = &camera {
             match crate::camera::snapshot(&state, p).await {
-                Ok(img) => photos.push(Picture { bytes: img, png: false }),
+                Ok(img) => photos.push(Picture { bytes: img, mime: "image/jpeg" }),
                 Err(e) => tracing::warn!("no camera picture for the notification: {e:#}"),
             }
         }
@@ -307,7 +315,18 @@ pub fn send_with_pictures(state: &Shared, wanted: impl Fn(&NotifyTarget) -> bool
         {
             let (path, plate) = (path.clone(), *plate);
             if let Ok(Ok(png)) = tokio::task::spawn_blocking(move || crate::threemf::thumbnail(&path, plate)).await {
-                photos.push(Picture { bytes: std::sync::Arc::new(png), png: true });
+                photos.push(Picture { bytes: std::sync::Arc::new(png), mime: "image/png" });
+            }
+        }
+        if photos.is_empty() {
+            for url in &pics.site {
+                match crate::api::jobs::site_picture(url).await {
+                    Ok(p) => {
+                        photos.push(p);
+                        break;
+                    }
+                    Err(e) => tracing::warn!("no model picture for the notification ({url}): {e:#}"),
+                }
             }
         }
         // Home Assistant fetches the picture itself: its own camera, else a

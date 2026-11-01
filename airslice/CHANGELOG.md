@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A job from MakerWorld, Printables or Thingiverse links to its other files ("Other files", "Other print profiles") and to the original page. On the model page, files you printed before are marked, and a file you haven't printed is picked first.
+- The history shows the model's own picture instead of the camera photo of the result (the photo is still on the job's page).
+- "Printing on…" notifications carry the plate render, or the site's picture of the file or model, instead of a camera picture of the empty bed. "Sliced" and "printer is free" notifications fall back to the site's picture too.
 - Fixed: Printables and Thingiverse pictures didn't show once the app's service worker was active.
 
 ## 0.1.0

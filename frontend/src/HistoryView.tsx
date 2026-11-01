@@ -188,9 +188,8 @@ export function HistoryView({ printers, openJob }: { printers: Printer[] | null;
           return (
             <li key={j.id} style={{ position: "relative" }}>
               <button className="file" onClick={() => openJob(j.id)} type="button">
-                {j.photo ? (
-                  <img src={`api/jobs/${j.id}/photo.jpg`} alt="" loading="lazy" />
-                ) : j.model_cover ? (
+                {/* The model's own picture first: the camera's photo of the result is often dark and blurry. */}
+                {j.model_cover ? (
                   <img src={remoteImg(j.model_cover)} alt="" loading="lazy" />
                 ) : j.inspection?.plates.find((p) => p.has_thumbnail) ? (
                   <img
@@ -199,6 +198,8 @@ export function HistoryView({ printers, openJob }: { printers: Printer[] | null;
                     alt=""
                     loading="lazy"
                   />
+                ) : j.photo ? (
+                  <img src={`api/jobs/${j.id}/photo.jpg`} alt="" loading="lazy" />
                 ) : (
                   <div className="thumb-ph">{j.file.kind.toUpperCase()}</div>
                 )}
