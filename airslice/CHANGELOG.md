@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.2
 
 - History on a phone: swipe a job to the right to remove it. On a computer the ✕ button stays and now asks first.
 - Unlinking the Bambu Lab account or removing the Thingiverse token asks first.
