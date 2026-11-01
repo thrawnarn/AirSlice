@@ -110,7 +110,7 @@ screenshots).
   printer only reports name and size, and "already on the printer" (skip upload) must
   mean this very slice. `print` holds a per-job claim (`STARTING`) until the job is
   Uploading/Waiting; one `wait_and_send` loop per job (`WAITING`).
-- `JobState::in_use()` = busy or Started: slice/reslice/enqueue/slice_all refuse it and
+- `JobState::in_use()` = busy or Started: slice/reslice/enqueue/slice_all/delete refuse it and
   the history limit never drops it (`is_busy` alone is what a restart interrupts).
 - Never send `project_file` while the printer is busy (A1 mini cancels the running job).
 - Connection test (`PrinterManager::commands_refused`): re-sends the chamber light's
@@ -171,7 +171,8 @@ screenshots).
   Pro up to 65 °C, AMS HT 85 °C. The model comes from `{"info":{"command":"get_version"}}`
   → `info.module[].name` (`n3f/0`, `n3s/128`, `ams/0`, `ams_f1/0`), `dry_time` in the
   report is minutes left, `tray_temp`/`tray_time` the spool's own values. A unit feeding
-  a print can't dry (`AmsUnit::in_print`). A real P1S (firmware 01.10, 2026-11-01) answers
+  a print can't dry (`AmsUnit::in_print`); a print can't use a drying unit (`StatusView::drying_refusal`,
+  checked in `jobs::send` before the upload), and matching avoids one when it can. A real P1S (firmware 01.10, 2026-11-01) answers
   the command with "success" and ignores it, as ha-bambulab #1448/#1738 report for P1S/P1P;
   only a changed report counts as started. Started on its screen, it reports `dry_time`
   and `info` 2023/2024 (bits 4–7 = 2). `ignores_drying_command` hides the controls on P1S/P1P;

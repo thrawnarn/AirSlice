@@ -428,6 +428,15 @@ pub async fn delete(State(state): State<Shared>, Path(id): Path<String>) -> ApiR
             for j in d.jobs.iter_mut().filter(|j| queued.contains(&j.id)) {
                 j.state = crate::models::JobState::Sliced;
             }
+            // Nothing follows these any more, and a job on a printer can't be removed.
+            for j in d.jobs.iter_mut().filter(|j| j.state == crate::models::JobState::Started && j.print.as_ref().is_some_and(|pr| pr.printer_id == id)) {
+                j.state = crate::models::JobState::Finished;
+                if let Some(pr) = j.print.as_mut() {
+                    pr.outcome = Some(crate::models::PrintOutcome::Unknown);
+                    pr.ended_at = Some(now());
+                }
+                j.push_log("The printer was removed; this print's result isn't known");
+            }
             if d.default_printer_id.as_deref() == Some(id.as_str()) {
                 d.default_printer_id = d.printers.first().map(|p| p.id.clone());
             }

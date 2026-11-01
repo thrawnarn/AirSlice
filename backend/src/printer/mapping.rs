@@ -54,7 +54,8 @@ fn same_type(a: &str, b: &str) -> bool {
 ///
 /// Preference: exact type match with the closest color, then same base
 /// material (e.g. "PLA" for "PLA Silk"), each tray used at most once while
-/// unused trays remain. With no AMS, everything goes to the external spool.
+/// unused trays remain, and a unit that's drying only when nothing else fits.
+/// With no AMS, everything goes to the external spool.
 #[cfg(test)]
 pub fn suggest(filaments: &[SlicedFilament], slots: u32, status: &StatusView) -> MappingSuggestion {
     suggest_with(filaments, slots, status, &[])
@@ -69,11 +70,13 @@ pub fn suggest_with(filaments: &[SlicedFilament], slots: u32, status: &StatusVie
     let mut warnings = Vec::new();
     let mut complete = true;
     let trays: Vec<&Tray> = status.usable_trays();
+    let drying: Vec<u32> = status.ams_units.iter().filter(|u| u.dry_minutes.is_some()).map(|u| u.id).collect();
+    let is_drying = |t: &Tray| t.ams.is_some_and(|a| drying.contains(&a));
     let mut taken: Vec<i32> = Vec::new();
     let mut remaining: Vec<&SlicedFilament> = Vec::new();
     for f in filaments {
         let want = pinned.get(f.id as usize - 1).copied().unwrap_or(-1);
-        match trays.iter().find(|t| t.id == want && base_type(&t.kind) == base_type(&f.kind)) {
+        match trays.iter().find(|t| t.id == want && base_type(&t.kind) == base_type(&f.kind) && !is_drying(t)) {
             Some(t) if want >= 0 => {
                 mapping[f.id as usize - 1] = t.id;
                 taken.push(t.id);
@@ -110,15 +113,16 @@ pub fn suggest_with(filaments: &[SlicedFilament], slots: u32, status: &StatusVie
     order.sort_by_key(|f| trays.iter().filter(|t| same_type(&t.kind, &f.kind)).count());
 
     for f in order {
+        let exact = |t: &Tray| same_type(&t.kind, &f.kind);
+        let base = |t: &Tray| base_type(&t.kind) == base_type(&f.kind) && !base_type(&f.kind).is_empty();
+        let any_ready = trays.iter().any(|t| !is_drying(t) && (exact(t) || base(t)));
         let pick = |pred: &dyn Fn(&Tray) -> bool, allow_taken: bool| -> Option<&Tray> {
             trays
                 .iter()
                 .copied()
-                .filter(|t| pred(t) && (allow_taken || !taken.contains(&t.id)))
+                .filter(|t| pred(t) && (allow_taken || !taken.contains(&t.id)) && !(any_ready && is_drying(t)))
                 .min_by_key(|t| color_distance(&t.color, &f.color))
         };
-        let exact = |t: &Tray| same_type(&t.kind, &f.kind);
-        let base = |t: &Tray| base_type(&t.kind) == base_type(&f.kind) && !base_type(&f.kind).is_empty();
 
         let chosen = pick(&exact, false)
             .or_else(|| pick(&exact, true))
@@ -134,6 +138,9 @@ pub fn suggest_with(filaments: &[SlicedFilament], slots: u32, status: &StatusVie
             });
         match chosen {
             Some(t) => {
+                if is_drying(t) {
+                    warnings.push(format!("Filament {} ({}) is only loaded in a unit that's drying.", f.id, f.kind));
+                }
                 taken.push(t.id);
                 mapping[f.id as usize - 1] = t.id;
             }
@@ -238,6 +245,29 @@ mod tests {
         let s2 = status(vec![tray(0, "PLA", "#FFFFFF"), tray(1, "PETG", "#FF0000")]);
         let m2 = suggest_with(&[fil(1, "PLA", "#FFFFFF")], 1, &s2, &[1]);
         assert_eq!(m2.ams_mapping, vec![0]);
+    }
+
+    fn drying_unit(id: u32) -> crate::printer::status::AmsUnit {
+        crate::printer::status::AmsUnit { id, name: format!("AMS {id}"), humidity_pct: None, humidity_level: None, temp: None, dry_minutes: Some(60), model: None, dry_max_temp: None, in_print: false }
+    }
+
+    #[test]
+    fn prefers_trays_that_arent_drying() {
+        let mut s = status(vec![tray(0, "PLA", "#FFFFFF"), tray(4, "PLA", "#FF0000")]);
+        s.ams_units = vec![drying_unit(0)];
+        // The closer colour and even a chosen tray give way to a unit that can print.
+        let m = suggest_with(&[fil(1, "PLA", "#FFFFFF")], 1, &s, &[0]);
+        assert_eq!(m.ams_mapping, vec![4]);
+        assert!(m.warnings.is_empty(), "{:?}", m.warnings);
+        assert!(s.drying_refusal(&m.ams_mapping).is_none());
+
+        // Nowhere else: it's still found, and printing says why it can't.
+        let m = suggest(&[fil(1, "PLA", "#FFFFFF")], 1, &StatusView { ams_units: vec![drying_unit(0)], ..status(vec![tray(0, "PLA", "#FFFFFF")]) });
+        assert_eq!(m.ams_mapping, vec![0]);
+        assert!(m.complete);
+        assert!(m.warnings[0].contains("drying"));
+        assert!(s.drying_refusal(&m.ams_mapping).unwrap().contains("AMS 0 is drying"));
+        assert!(s.drying_refusal(&[EXTERNAL_TRAY]).is_none());
     }
 
     #[test]

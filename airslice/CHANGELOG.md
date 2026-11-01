@@ -3,6 +3,10 @@
 ## Unreleased
 
 - Changing an AMS HT's filament or re-reading its RFID tag now goes to the right unit.
+- A job that's printing can't be removed from the history, by swipe or ✕, so its result isn't lost. A second finger on a row no longer counts as a swipe.
+- Printing from an AMS that's drying is refused straight away instead of after the upload, and automatic tray matching picks another unit when one has the same filament.
+- The Dry button no longer stays hidden when an AMS shows up late after the printer starts, an unrelated printer message no longer counts as a failed drying start, and the dialog doesn't reopen by itself after a print or drying elsewhere.
+- PCTG is suggested 65 °C for drying instead of 80 °C.
 
 ## 0.1.2
 

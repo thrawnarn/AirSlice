@@ -193,6 +193,12 @@ impl StatusView {
         matches!(self.state.as_deref(), Some("RUNNING" | "PREPARE" | "PAUSE" | "SLICING"))
     }
 
+    /// Why a tray mapping can't print now: a unit it uses is drying.
+    pub fn drying_refusal(&self, ams_mapping: &[i32]) -> Option<String> {
+        let unit = self.ams_units.iter().find(|u| u.dry_minutes.is_some() && ams_mapping.iter().any(|t| tray_unit(*t) == Some(u.id)))?;
+        Some(format!("{} is drying its filament and can't feed a print. Stop the drying or wait until it's done.", unit.name))
+    }
+
     /// Trays that can feed a print (AMS slots with filament + external spool).
     pub fn usable_trays(&self) -> Vec<&Tray> {
         self.trays.iter().chain(self.external.iter()).filter(|t| !t.kind.is_empty()).collect()

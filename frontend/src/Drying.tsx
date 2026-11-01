@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "./api";
 import { tr } from "./i18n";
 import type { AmsUnit, Printer, Tray } from "./types";
@@ -13,6 +13,7 @@ const TYPICAL_TEMP: [string, number][] = [
   ["PLA", 50],
   ["PETG", 65],
   ["PET", 65],
+  ["PCTG", 65],
   ["TPU", 65],
   ["PVA", 65],
   ["BVOH", 65],
@@ -115,6 +116,11 @@ export function DryingControl({ printer, unit, trays }: { printer: Printer; unit
   const [step, setStep] = useState<"notice" | "settings" | null>(null);
   const [busy, setBusy] = useState(false);
   const controls = printer.can_start_drying !== false;
+  // Drying or a print started elsewhere: the sheet closes for good, not until it's over.
+  const startable = !unit.dry_minutes && !unit.in_print;
+  useEffect(() => {
+    if (!startable) setStep(null);
+  }, [startable]);
 
   async function stop() {
     if (!window.confirm(tr("Stop drying {0}?", [unit.name]))) return;

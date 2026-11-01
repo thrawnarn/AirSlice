@@ -21,6 +21,14 @@ use tokio::{
 /// nothing reached the printer, so the command can safely be sent again.
 pub const NOT_CONNECTED: &str = "printer is not connected";
 
+impl LiveState {
+    /// Connected, with an AMS whose model the printer hasn't told yet (an AMS HT's is
+    /// known from its id), or no module list at all.
+    fn lacks_ams_model(&self) -> bool {
+        self.connected && (self.ams_models.is_empty() || status::view(&self.print).ams_units.iter().any(|u| u.id < 128 && !self.ams_models.contains_key(&u.id)))
+    }
+}
+
 #[derive(Default)]
 struct LiveState {
     connected: bool,
@@ -240,11 +248,9 @@ impl PrinterManager {
             if s.ams_units.iter().any(|u| u.id == unit && u.dry_minutes.is_some() == dry.is_some()) {
                 return Ok(true);
             }
-            if let Some(code) = s.hms.iter().find(|c| !hms_before.contains(c)) {
-                match status::hms_explained(code) {
-                    Some(why) => bail!("{why} (HMS {code})"),
-                    None => bail!("the printer reported HMS {code}, check its screen"),
-                }
+            // Other messages can come up in these seconds and say nothing about drying.
+            if let Some((code, why)) = s.hms.iter().filter(|c| !hms_before.contains(c)).find_map(|c| status::hms_explained(c).map(|why| (c, why))) {
+                bail!("{why} (HMS {code})");
             }
             let reply = conn.live.read().await.reply.clone();
             if let Some(reason) = refusal(reply.as_ref(), DRYING_COMMAND) {
@@ -281,8 +287,9 @@ impl PrinterManager {
         if status.is_busy() {
             bail!("printer is busy ({})", status.state.unwrap_or_default());
         }
-        if let Some(unit) = status.ams_units.iter().find(|u| u.dry_minutes.is_some() && ams_mapping.iter().any(|t| status::tray_unit(*t) == Some(u.id))) {
-            bail!("{} is drying its filament and can't feed a print. Stop the drying or wait until it's done.", unit.name);
+        // Checked before the upload too; drying may have started since.
+        if let Some(why) = status.drying_refusal(ams_mapping) {
+            bail!("{why}");
         }
         let h2 = printer.printer_model.to_uppercase().contains(" H2");
         let payload = build_print_command(remote_file, gcode_entry, ams_mapping, opts, h2);
@@ -394,6 +401,8 @@ pub struct DrySetting {
 }
 
 const DRYING_COMMAND: &str = "ams_filament_drying";
+const VERSION_RETRIES: u32 = 8;
+const VERSION_RETRY_EVERY: Duration = Duration::from_secs(15);
 
 /// Printers that answer `ams_filament_drying` with "success" and then do nothing.
 /// They can dry from their own screen, and report it like any other.
@@ -534,8 +543,14 @@ async fn run_connection(conn: Arc<Conn>, settings: Arc<std::sync::RwLock<Connect
                     if quiet && c.live.read().await.connected {
                         let _ = cl.publish(req.clone(), QoS::AtMostOnce, false, push.to_string()).await;
                     }
-                    if c.live.read().await.ams_models.is_empty() && c.live.read().await.connected {
-                        let _ = cl.publish(req, QoS::AtMostOnce, false, version.to_string()).await;
+                    // AMS units keep turning up for a while after a boot, and the printer
+                    // only lists the ones it knows when asked.
+                    for _ in 0..VERSION_RETRIES {
+                        if !c.live.read().await.lacks_ams_model() {
+                            break;
+                        }
+                        let _ = cl.publish(req.clone(), QoS::AtMostOnce, false, version.to_string()).await;
+                        tokio::time::sleep(VERSION_RETRY_EVERY).await;
                     }
                 });
             }

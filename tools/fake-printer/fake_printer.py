@@ -17,6 +17,8 @@ Environment:
   AMS_HT=1        add an AMS HT (unit 128)
   DRY_REFUSE=why  refuse ams_filament_drying with this reason
   DRY_IGNORE=1    answer ams_filament_drying with success and do nothing, like a P1S
+  DRY_HMS=attr:code  an HMS message comes up when asked to dry (hex)
+  VERSION_LATE=N  leave the AMS out of the first N get_version answers
   DRY_TIME=N      the first AMS is already drying, N minutes left (started on the screen)
   HMS=attr:code   report an active HMS message (hex, e.g. 05000500:00010007)
 
@@ -153,6 +155,8 @@ STATE = {
 AMS_MODULE = os.environ.get("AMS_MODULE", "n3f/0")
 DRY_REFUSE = os.environ.get("DRY_REFUSE", "")
 DRY_IGNORE = os.environ.get("DRY_IGNORE", "")
+DRY_HMS = os.environ.get("DRY_HMS", "")
+VERSION_LATE = [int(os.environ.get("VERSION_LATE", "0"))]
 if os.environ.get("DRY_TIME"):
     STATE["ams"]["ams"][0]["dry_time"] = int(os.environ["DRY_TIME"])
 if os.environ.get("AMS_HT"):
@@ -190,7 +194,11 @@ async def device():
         if payload.get("pushing", {}).get("command") == "pushall":
             await report(STATE)
         if payload.get("info", {}).get("command") == "get_version":
-            modules = [{"name": "ota", "sw_ver": "01.10.00.00", "sn": SERIAL}, {"name": AMS_MODULE, "sw_ver": "03.00.21.29", "sn": "AMS"}]
+            modules = [{"name": "ota", "sw_ver": "01.10.00.00", "sn": SERIAL}]
+            if VERSION_LATE[0] > 0:
+                VERSION_LATE[0] -= 1
+            else:
+                modules.append({"name": AMS_MODULE, "sw_ver": "03.00.21.29", "sn": "AMS"})
             if os.environ.get("AMS_HT"):
                 modules.append({"name": "n3s/128", "sw_ver": "03.00.21.29", "sn": "HT"})
             await c.publish(f"device/{SERIAL}/report", json.dumps({"info": {"command": "get_version", "module": modules}}).encode())
@@ -220,13 +228,18 @@ async def device():
             if p["ams_id"] == 255:
                 tray = STATE["vt_tray"]
             else:
-                tray = STATE["ams"]["ams"][p["ams_id"]]["tray"][p["tray_id"]]
+                unit = next(u for u in STATE["ams"]["ams"] if int(u["id"]) == p["ams_id"])
+                tray = unit["tray"][p["tray_id"]]
             tray.pop("tray_sub_brands", None)
             tray.update(tray_type=p["tray_type"], tray_color=p["tray_color"], tray_info_idx=p["tray_info_idx"],
                         nozzle_temp_min=str(p["nozzle_temp_min"]), nozzle_temp_max=str(p["nozzle_temp_max"]))
             await report({"ams": STATE["ams"], "vt_tray": STATE["vt_tray"]})
         elif cmd == "ams_filament_drying":
             p = payload["print"]
+            if DRY_HMS:
+                attr, code = DRY_HMS.split(":")
+                STATE["hms"] = STATE["hms"] + [{"attr": int(attr, 16), "code": int(code, 16)}]
+                await report({"hms": STATE["hms"]})
             if DRY_REFUSE:
                 await report({"command": cmd, "result": "fail", "reason": DRY_REFUSE})
             elif DRY_IGNORE:

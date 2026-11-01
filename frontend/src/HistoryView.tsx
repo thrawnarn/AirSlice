@@ -96,20 +96,22 @@ function SwipeRow({ enabled, onRemove, children }: { enabled: boolean; onRemove:
   const [dragging, setDragging] = useState(false);
   // What's behind the row stays until the row has slid back over it.
   const [showBehind, setShowBehind] = useState(false);
-  const drag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+  const drag = useRef<{ id: number; x: number; y: number; moved: boolean } | null>(null);
   const width = useRef(0);
   // The browser still sends a click when the finger lifts; a swipe mustn't also open the job.
   const swiped = useRef(false);
 
   function down(e: PointerEvent<HTMLLIElement>) {
+    // A second finger neither starts a swipe nor steers the one under way.
+    if (!e.isPrimary) return;
     swiped.current = false;
-    if (!enabled || e.pointerType !== "touch" || !e.isPrimary) return;
-    drag.current = { x: e.clientX, y: e.clientY, moved: false };
+    if (!enabled || e.pointerType !== "touch") return;
+    drag.current = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false };
     width.current = e.currentTarget.offsetWidth;
   }
   function move(e: PointerEvent<HTMLLIElement>) {
     const d = drag.current;
-    if (!d) return;
+    if (d?.id !== e.pointerId) return;
     const mx = e.clientX - d.x;
     const my = e.clientY - d.y;
     if (!d.moved) {
@@ -127,15 +129,17 @@ function SwipeRow({ enabled, onRemove, children }: { enabled: boolean; onRemove:
   }
   async function up(e: PointerEvent<HTMLLIElement>) {
     const d = drag.current;
+    if (d?.id !== e.pointerId) return;
     drag.current = null;
-    if (!d?.moved) return;
+    if (!d.moved) return;
     setDragging(false);
     if (e.clientX - d.x < width.current * SWIPE_REMOVE_AT) return setDx(0);
     setDx(width.current);
     await onRemove();
     setDx(0); // still here only if removing failed
   }
-  function cancel() {
+  function cancel(e: PointerEvent<HTMLLIElement>) {
+    if (drag.current?.id !== e.pointerId) return;
     drag.current = null;
     setDragging(false);
     setDx(0);
@@ -214,7 +218,7 @@ export function HistoryView({ printers, openJob }: { printers: Printer[] | null;
     }
   }
 
-  const removable = (j: Job) => !["downloading", "slicing", "uploading", "starting", "waiting"].includes(j.state) && !j.favorite;
+  const removable = (j: Job) => !["downloading", "slicing", "uploading", "starting", "waiting", "started"].includes(j.state) && !j.favorite;
 
   return (
     <main className="page">

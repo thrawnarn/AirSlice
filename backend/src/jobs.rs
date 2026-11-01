@@ -1279,6 +1279,9 @@ async fn send(
             s.ams_mapping
         }
     };
+    if let Some(why) = status.drying_refusal(&ams) {
+        bail!("{why}");
+    }
     let use_ams = ams.iter().any(|&t| (0..crate::printer::status::EXTERNAL_TRAY).contains(&t));
     let local = slice.output_path.clone();
     let local = if local.as_os_str().is_empty() {
@@ -1902,7 +1905,7 @@ pub async fn reslice(state: &Shared, id: &str) -> anyhow::Result<Job> {
 /// Delete a job and its files.
 pub async fn delete(state: &Shared, id: &str) -> anyhow::Result<()> {
     let job = get_job(state, id).await.ok_or_else(|| anyhow!("job not found"))?;
-    if job.state.is_busy() {
+    if job.state.in_use() {
         bail!("the job is still running");
     }
     state
