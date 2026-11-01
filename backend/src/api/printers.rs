@@ -1,7 +1,7 @@
 use crate::{
     error::{ApiResult, AppError},
     models::{FtpDataMode, Printer, now},
-    printer::{TraySetting, ftp, status::{EXTERNAL_TRAY, StatusView}},
+    printer::{DrySetting, TraySetting, ftp, status::{EXTERNAL_TRAY, StatusView}},
     slicer::{BUILD_PLATES, BuildPlate, build_plate},
     state::Shared,
 };
@@ -105,7 +105,7 @@ pub async fn view(state: &Shared, p: &Printer, default_id: Option<&str>) -> Prin
         is_default: default_id == Some(p.id.as_str()),
         // Everything queued for its type: any of those can go to this printer.
         queue_length: state.store.read(|d| d.queue.iter().filter(|q| crate::jobs::queue_group(&d.printers, &q.printer_id) == p.machine_profile).count()).await,
-        status: state.printers.status(&p.id).await,
+        status: with_units_in_print(state, &p.id, state.printers.status(&p.id).await).await,
         current_job: state
             .store
             .read(|d| {
@@ -559,6 +559,75 @@ pub async fn reread_tray(State(state): State<Shared>, Path((id, tray)): Path<(St
     known_tray(&state, &id, tray).await?;
     state.printers.reread_tray(&id, tray).await.map_err(|e| AppError::bad_request(format!("{e:#}")))?;
     Ok(Json(json!({"ok": true})))
+}
+
+/// Mark the units feeding the running print: the one in use now and, for a
+/// print sent from here, every unit its mapping names. A print started elsewhere
+/// only tells the first; the printer itself refuses drying the others.
+async fn with_units_in_print(state: &Shared, id: &str, mut status: StatusView) -> StatusView {
+    if !status.is_busy() {
+        return status;
+    }
+    let mapped: Vec<i32> = state
+        .store
+        .read(|d| {
+            d.jobs
+                .iter()
+                .filter(|j| j.state == crate::models::JobState::Started)
+                .filter_map(|j| j.print.as_ref())
+                .filter(|pr| pr.printer_id == id && pr.use_ams)
+                .flat_map(|pr| pr.ams_mapping.clone())
+                .collect()
+        })
+        .await;
+    let active: Vec<u32> = status.trays.iter().filter(|t| t.active).filter_map(|t| t.ams).collect();
+    for u in &mut status.ams_units {
+        u.in_print = active.contains(&u.id) || mapped.iter().any(|t| crate::printer::status::tray_unit(*t) == Some(u.id));
+    }
+    status
+}
+
+#[derive(Deserialize)]
+pub struct DryBody {
+    temp: u32,
+    hours: u32,
+    #[serde(default)]
+    rotate: bool,
+}
+
+/// Start drying an AMS 2 Pro or AMS HT. `started` is false when the printer
+/// hasn't confirmed yet.
+pub async fn start_drying(
+    State(state): State<Shared>,
+    Path((id, unit)): Path<(String, u32)>,
+    Json(body): Json<DryBody>,
+) -> ApiResult<Json<Value>> {
+    load(&state, &id).await?;
+    let status = with_units_in_print(&state, &id, state.printers.status(&id).await).await;
+    let Some(u) = status.ams_units.iter().find(|u| u.id == unit) else {
+        return Err(AppError::bad_request("the printer isn't reporting that AMS"));
+    };
+    let Some(max) = u.dry_max_temp else {
+        return Err(AppError::bad_request(format!("{} can't dry filament", u.name)));
+    };
+    if u.in_print {
+        return Err(AppError::bad_request(format!("{} is feeding the running print, so it can't dry", u.name)));
+    }
+    if !(45..=max).contains(&body.temp) {
+        return Err(AppError::bad_request(format!("{} dries at 45 to {max} °C", u.name)));
+    }
+    if !(1..=24).contains(&body.hours) {
+        return Err(AppError::bad_request("choose 1 to 24 hours"));
+    }
+    let dry = DrySetting { temp: body.temp, hours: body.hours, rotate: body.rotate };
+    let started = state.printers.set_drying(&id, unit, Some(&dry)).await.map_err(|e| AppError::bad_gateway(format!("{e:#}")))?;
+    Ok(Json(json!({"started": started})))
+}
+
+pub async fn stop_drying(State(state): State<Shared>, Path((id, unit)): Path<(String, u32)>) -> ApiResult<Json<Value>> {
+    load(&state, &id).await?;
+    let stopped = state.printers.set_drying(&id, unit, None).await.map_err(|e| AppError::bad_gateway(format!("{e:#}")))?;
+    Ok(Json(json!({"stopped": stopped})))
 }
 
 async fn known_tray(state: &Shared, id: &str, tray: i32) -> ApiResult<()> {

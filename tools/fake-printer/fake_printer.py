@@ -13,6 +13,9 @@ Environment:
   FTP_MODE=reuse  (default) data channel must resume the TLS session (vsftpd, X1/P1)
   FTP_MODE=clear  refuse PROT P, like the A1 series
   PRINT_SECONDS=N finish a print after N seconds
+  AMS_MODULE=n3f/0 what the AMS is (default n3f/0 = AMS 2 Pro, ams/0 = original AMS)
+  AMS_HT=1        add an AMS HT (unit 128)
+  DRY_REFUSE=why  refuse ams_filament_drying with this reason
   HMS=attr:code   report an active HMS message (hex, e.g. 05000500:00010007)
 
 Port 990 is privileged: run as root on Linux (e.g. sudo), or in a container.
@@ -145,6 +148,13 @@ STATE = {
     "hms": HMS,
 }
 
+AMS_MODULE = os.environ.get("AMS_MODULE", "n3f/0")
+DRY_REFUSE = os.environ.get("DRY_REFUSE", "")
+if os.environ.get("AMS_HT"):
+    STATE["ams"]["ams"].append({"id": "128", "humidity": "3", "humidity_raw": "30", "temp": "24.0", "tray": [
+        {"id": "0", "tray_type": "PA-CF", "tray_color": "222222FF", "remain": 60, "tray_temp": "80", "tray_time": "12"},
+    ]})
+
 async def run_print(report, subtask):
     for pct in range(10, 101, 10):
         await asyncio.sleep(PRINT_SECONDS / 10)
@@ -174,6 +184,11 @@ async def device():
             f.write(json.dumps(payload) + "\n")
         if payload.get("pushing", {}).get("command") == "pushall":
             await report(STATE)
+        if payload.get("info", {}).get("command") == "get_version":
+            modules = [{"name": "ota", "sw_ver": "01.10.00.00", "sn": SERIAL}, {"name": AMS_MODULE, "sw_ver": "03.00.21.29", "sn": "AMS"}]
+            if os.environ.get("AMS_HT"):
+                modules.append({"name": "n3s/128", "sw_ver": "03.00.21.29", "sn": "HT"})
+            await c.publish(f"device/{SERIAL}/report", json.dumps({"info": {"command": "get_version", "module": modules}}).encode())
         cmd = payload.get("print", {}).get("command")
         if cmd == "project_file":
             name = payload["print"]["file"]
@@ -205,6 +220,15 @@ async def device():
             tray.update(tray_type=p["tray_type"], tray_color=p["tray_color"], tray_info_idx=p["tray_info_idx"],
                         nozzle_temp_min=str(p["nozzle_temp_min"]), nozzle_temp_max=str(p["nozzle_temp_max"]))
             await report({"ams": STATE["ams"], "vt_tray": STATE["vt_tray"]})
+        elif cmd == "ams_filament_drying":
+            p = payload["print"]
+            if DRY_REFUSE:
+                await report({"command": cmd, "result": "fail", "reason": DRY_REFUSE})
+            else:
+                for unit in STATE["ams"]["ams"]:
+                    if int(unit["id"]) == p["ams_id"]:
+                        unit["dry_time"] = p["duration"] * 60 if p["mode"] else 0
+                await report({"ams": STATE["ams"], "command": cmd, "result": "success"})
         elif cmd == "ams_get_rfid":
             # The AMS takes a few seconds to read the tag, then reports as usual.
             await asyncio.sleep(2)

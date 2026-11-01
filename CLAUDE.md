@@ -166,6 +166,12 @@ screenshots).
   `filament_id` e.g. GFL99, tray_color RRGGBBAA, nozzle_temp_min/max, tray_type;
   external = ams 255 / tray 254), `ams_get_rfid` (ams_id, slot_id; no external).
   The fake printer applies both.
+- AMS drying: `ams_filament_drying` (ams_id, temp, cooling_temp ≥ 45 or it's ignored,
+  duration in hours 1–24, mode 1 start / 0 stop, rotate_tray; from ha-bambulab). AMS 2
+  Pro up to 65 °C, AMS HT 85 °C. The model comes from `{"info":{"command":"get_version"}}`
+  → `info.module[].name` (`n3f/0`, `n3s/128`, `ams/0`, `ams_f1/0`), `dry_time` in the
+  report is minutes left, `tray_temp`/`tray_time` the spool's own values. A unit feeding
+  a print can't dry (`AmsUnit::in_print`). Not yet run on a real printer.
 - Build plates (`curr_bed_type` values): `Textured PEI Plate`, `Cool Plate`,
   `Supertack Plate` (Orca also accepts "SuperTack Plate" and saves it lower-t),
   `Textured Cool Plate`, `Engineering Plate`, `High Temp Plate`. An unknown value falls

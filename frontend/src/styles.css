@@ -638,7 +638,8 @@ a.pc-job-title:hover { text-decoration: underline; }
 .pc-last { display: flex; align-items: center; gap: 12px; margin-top: 14px; padding: 10px; border-radius: var(--radius-m); background: var(--panel-2); color: inherit; text-decoration: none; }
 .pc-last > span { display: flex; flex-direction: column; gap: 1px; }
 .pc-last-title { font-weight: 620; }
-.pc-trays-link { margin-left: auto; }
+.pc-unit-actions { margin-left: auto; display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.pc-drying { font-weight: 620; }
 .pc-next { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 10px; padding: 10px; border-radius: var(--radius-m); border: 1px solid var(--line); }
 .pc-next-item { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; color: inherit; text-decoration: none; }
 .pc-next-item > span { display: flex; flex-direction: column; gap: 1px; }

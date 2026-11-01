@@ -29,6 +29,9 @@ pub struct Tray {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uuid: Option<String>,
     pub active: bool,
+    /// Drying values from the spool's RFID tag.
+    pub dry_temp: Option<i32>,
+    pub dry_hours: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -94,6 +97,52 @@ pub struct AmsUnit {
     pub temp: Option<f64>,
     /// Drying time left in minutes, while drying.
     pub dry_minutes: Option<i64>,
+    /// "AMS 2 Pro", "AMS HT", "AMS", "AMS Lite", from the printer's module list.
+    pub model: Option<String>,
+    /// Highest drying temperature in °C; `None` when this unit can't dry.
+    pub dry_max_temp: Option<u32>,
+    /// Feeds the running print, so the printer won't dry it.
+    pub in_print: bool,
+}
+
+/// Unit id and model from a `get_version` module name ("n3f/0", "n3s/128").
+pub fn ams_module(name: &str) -> Option<(u32, &'static str)> {
+    let (kind, id) = name.split_once('/')?;
+    let model = match kind {
+        "ams" => "AMS",
+        "ams_f1" => "AMS Lite",
+        "n3f" => "AMS 2 Pro",
+        "n3s" => "AMS HT",
+        _ => return None,
+    };
+    Some((id.parse().ok()?, model))
+}
+
+fn dry_max_temp(model: &str) -> Option<u32> {
+    match model {
+        "AMS 2 Pro" => Some(65),
+        "AMS HT" => Some(85),
+        _ => None,
+    }
+}
+
+impl AmsUnit {
+    /// Fill in what the status report doesn't say. Units from 128 up are always
+    /// an AMS HT; below that it takes the module list.
+    pub fn set_model(&mut self, models: &std::collections::HashMap<u32, String>) {
+        self.model = models.get(&self.id).cloned().or_else(|| (self.id >= 128).then(|| "AMS HT".to_string()));
+        self.dry_max_temp = self.model.as_deref().and_then(dry_max_temp);
+    }
+}
+
+/// The AMS unit a global tray id belongs to; `None` for the external spool.
+pub fn tray_unit(tray: i32) -> Option<u32> {
+    match tray {
+        EXTERNAL_TRAY => None,
+        t if t < 0 => None,
+        t if t >= 128 => Some(t as u32),
+        t => Some(t as u32 / 4),
+    }
 }
 
 /// An active HMS message.
@@ -208,6 +257,8 @@ fn parse_tray(t: &Value, ams: Option<u32>, active_id: Option<i64>) -> Option<Tra
         info_idx: string(t.get("tray_info_idx")),
         uuid: string(t.get("tray_uuid")).filter(|u| u.chars().any(|c| c != '0')),
         active: active_id == Some(id as i64),
+        dry_temp: int(t.get("tray_temp")).map(|v| v as i32).filter(|v| *v > 0),
+        dry_hours: int(t.get("tray_time")).map(|v| v as i32).filter(|v| *v > 0),
     })
 }
 
@@ -289,6 +340,9 @@ pub fn view(print: &Value) -> StatusView {
                 humidity_level: int(unit.get("humidity")).filter(|h| (1..=5).contains(h)),
                 temp: unit.get("temp").and_then(num).filter(|t| *t > -40.0 && *t < 120.0 && *t != 0.0),
                 dry_minutes: int(unit.get("dry_time")).filter(|m| *m > 0),
+                model: None,
+                dry_max_temp: None,
+                in_print: false,
             });
             for t in unit.get("tray").and_then(|t| t.as_array()).into_iter().flatten() {
                 if let Some(tray) = parse_tray(t, Some(ams_id), active) {
@@ -330,6 +384,37 @@ mod tests {
         assert_eq!(base["ams"]["tray_now"], "2");
         assert_eq!(base["ams"]["ams"], json!([1]));
         assert_eq!(base["mc_percent"], 0);
+    }
+
+    #[test]
+    fn knows_which_ams_units_can_dry() {
+        let models = [("n3f/0", "AMS 2 Pro", Some(65)), ("n3s/128", "AMS HT", Some(85)), ("ams/1", "AMS", None), ("ams_f1/0", "AMS Lite", None)];
+        for (name, model, max) in models {
+            let (id, m) = ams_module(name).unwrap();
+            assert_eq!(m, model);
+            let mut unit = view(&json!({"ams": {"ams": [{"id": id.to_string(), "tray": []}]}})).ams_units.remove(0);
+            unit.set_model(&std::collections::HashMap::from([(id, m.to_string())]));
+            assert_eq!((unit.model.as_deref(), unit.dry_max_temp), (Some(model), max));
+        }
+        assert_eq!(ams_module("ota"), None);
+        assert_eq!(ams_module("mc/0"), None);
+        // Before the module list has come in, only an HT can be told apart.
+        let v = view(&json!({"ams": {"ams": [{"id": "0", "tray": []}, {"id": "128", "tray": []}]}}));
+        let mut units = v.ams_units;
+        units.iter_mut().for_each(|u| u.set_model(&Default::default()));
+        assert_eq!((units[0].dry_max_temp, units[1].dry_max_temp), (None, Some(85)));
+        assert_eq!((tray_unit(5), tray_unit(128), tray_unit(254), tray_unit(-1)), (Some(1), Some(128), None, None));
+    }
+
+    #[test]
+    fn reads_drying_values_of_a_spool() {
+        let v = view(&json!({"ams": {"ams": [{"id": "0", "dry_time": 95, "tray": [
+            {"id": "0", "tray_type": "PLA", "tray_temp": "55", "tray_time": "8"},
+            {"id": "1", "tray_type": "PLA", "tray_temp": "0", "tray_time": "0"}
+        ]}]}}));
+        assert_eq!(v.ams_units[0].dry_minutes, Some(95));
+        assert_eq!((v.trays[0].dry_temp, v.trays[0].dry_hours), (Some(55), Some(8)));
+        assert_eq!((v.trays[1].dry_temp, v.trays[1].dry_hours), (None, None));
     }
 
     #[test]

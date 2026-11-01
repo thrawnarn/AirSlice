@@ -30,6 +30,8 @@ struct LiveState {
     print: Value,
     /// The printer's last answer to a command (`command`, `result`, `reason`).
     reply: Option<Value>,
+    /// AMS unit id → model, from `get_version`.
+    ams_models: HashMap<u32, String>,
 }
 
 struct Conn {
@@ -140,6 +142,7 @@ impl PrinterManager {
         let Ok(conn) = self.conn(id).await else { return StatusView::default() };
         let live = conn.live.read().await;
         let mut v = status::view(&live.print);
+        v.ams_units.iter_mut().for_each(|u| u.set_model(&live.ams_models));
         v.connected = live.connected;
         v.last_error = live.last_error.clone();
         v.last_update = live.last_update;
@@ -218,6 +221,51 @@ impl PrinterManager {
         self.publish(id, reread_command(tray)?).await
     }
 
+    /// Start drying an AMS unit, or stop it. `Ok(false)` when the printer hasn't
+    /// answered or changed within 10 s, which doesn't mean it refused.
+    pub async fn set_drying(&self, id: &str, unit: u32, dry: Option<&DrySetting>) -> anyhow::Result<bool> {
+        let conn = self.conn(id).await?;
+        let mut rx = conn.tick.subscribe();
+        let hms_before = self.status(id).await.hms;
+        conn.live.write().await.reply = None;
+        self.publish(id, drying_command(unit, dry)).await?;
+
+        let wait = Duration::from_secs(10);
+        let started = tokio::time::Instant::now();
+        let deadline = started + wait;
+        let mut asked = false;
+        loop {
+            let s = self.status(id).await;
+            if s.ams_units.iter().any(|u| u.id == unit && u.dry_minutes.is_some() == dry.is_some()) {
+                return Ok(true);
+            }
+            if let Some(code) = s.hms.iter().find(|c| !hms_before.contains(c)) {
+                match status::hms_explained(code) {
+                    Some(why) => bail!("{why} (HMS {code})"),
+                    None => bail!("the printer reported HMS {code}, check its screen"),
+                }
+            }
+            let reply = conn.live.read().await.reply.clone();
+            if let Some(reason) = refusal(reply.as_ref(), DRYING_COMMAND) {
+                bail!("the printer refused: {reason}");
+            }
+            if reply.is_some_and(|r| r.get("command").and_then(|c| c.as_str()) == Some(DRYING_COMMAND)) {
+                return Ok(true);
+            }
+            if !asked && started.elapsed() >= wait / 2 {
+                asked = true;
+                let _ = self.request_full_status(id).await;
+            }
+            let next = if asked { deadline } else { started + wait / 2 };
+            match tokio::time::timeout_at(next, rx.changed()).await {
+                Ok(Ok(())) => continue,
+                Ok(Err(_)) => bail!("connection to the printer was reset"),
+                Err(_) if tokio::time::Instant::now() < deadline => continue,
+                Err(_) => return Ok(false),
+            }
+        }
+    }
+
     /// Send the print command for a file already uploaded to the printer.
     /// Waits briefly for the printer to react so failures are reported.
     pub async fn start_print(
@@ -234,6 +282,9 @@ impl PrinterManager {
         }
         if status.is_busy() {
             bail!("printer is busy ({})", status.state.unwrap_or_default());
+        }
+        if let Some(unit) = status.ams_units.iter().find(|u| u.dry_minutes.is_some() && ams_mapping.iter().any(|t| status::tray_unit(*t) == Some(u.id))) {
+            bail!("{} is drying its filament and can't feed a print. Stop the drying or wait until it's done.", unit.name);
         }
         let h2 = printer.printer_model.to_uppercase().contains(" H2");
         let payload = build_print_command(remote_file, gcode_entry, ams_mapping, opts, h2);
@@ -265,7 +316,7 @@ impl PrinterManager {
                     None => bail!("{} reported HMS {code} — check the printer screen", printer.name),
                 }
             }
-            if let Some(reason) = refusal(conn.live.read().await.reply.as_ref()) {
+            if let Some(reason) = refusal(conn.live.read().await.reply.as_ref(), "project_file") {
                 bail!("{} refused the print: {reason}", printer.name);
             }
             // Some firmware only reports on its next periodic push: ask.
@@ -332,10 +383,37 @@ pub fn reread_command(tray: i32) -> anyhow::Result<Value> {
     Ok(json!({"print": {"sequence_id": "0", "command": "ams_get_rfid", "ams_id": ams, "slot_id": slot}}))
 }
 
-/// The reason when a command answer says it failed.
-fn refusal(reply: Option<&Value>) -> Option<String> {
+/// What to dry with: temperature in °C, hours, and whether to turn the spools.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrySetting {
+    pub temp: u32,
+    pub hours: u32,
+    pub rotate: bool,
+}
+
+const DRYING_COMMAND: &str = "ams_filament_drying";
+
+/// `mode` 1 starts and 0 stops. The printer ignores a `cooling_temp` under 45.
+pub fn drying_command(unit: u32, dry: Option<&DrySetting>) -> Value {
+    json!({"print": {
+        "sequence_id": "0",
+        "command": DRYING_COMMAND,
+        "ams_id": unit,
+        "temp": dry.map_or(0, |d| d.temp),
+        "cooling_temp": dry.map_or(0, |_| 45),
+        "duration": dry.map_or(0, |d| d.hours),
+        "humidity": 0,
+        "mode": i32::from(dry.is_some()),
+        "rotate_tray": dry.is_some_and(|d| d.rotate),
+        "filament": "",
+        "close_power_conflict": false,
+    }})
+}
+
+/// The reason when the answer to `command` says it failed.
+fn refusal(reply: Option<&Value>, command: &str) -> Option<String> {
     let r = reply?;
-    if r.get("command").and_then(|c| c.as_str()) != Some("project_file") {
+    if r.get("command").and_then(|c| c.as_str()) != Some(command) {
         return None;
     }
     let result = r.get("result").and_then(|v| v.as_str()).unwrap_or("");
@@ -436,6 +514,8 @@ async fn run_connection(conn: Arc<Conn>, settings: Arc<std::sync::RwLock<Connect
                 let req = format!("device/{}/request", p.serial);
                 let push = json!({"pushing": {"sequence_id": "0", "command": "pushall"}});
                 let _ = client.publish(req.clone(), QoS::AtMostOnce, false, push.to_string()).await;
+                let version = json!({"info": {"sequence_id": "0", "command": "get_version"}});
+                let _ = client.publish(req.clone(), QoS::AtMostOnce, false, version.to_string()).await;
                 conn.tick.send_modify(|t| *t += 1);
                 // A printer that just booted can miss that request; ask once
                 // more if no report has come in after a few seconds.
@@ -444,12 +524,23 @@ async fn run_connection(conn: Arc<Conn>, settings: Arc<std::sync::RwLock<Connect
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     let quiet = { c.live.read().await.last_update.is_none_or(|t| t < since) };
                     if quiet && c.live.read().await.connected {
-                        let _ = cl.publish(req, QoS::AtMostOnce, false, push.to_string()).await;
+                        let _ = cl.publish(req.clone(), QoS::AtMostOnce, false, push.to_string()).await;
+                    }
+                    if c.live.read().await.ams_models.is_empty() && c.live.read().await.connected {
+                        let _ = cl.publish(req, QoS::AtMostOnce, false, version.to_string()).await;
                     }
                 });
             }
             Ok(Event::Incoming(Packet::Publish(msg))) => {
                 let Ok(value) = serde_json::from_slice::<Value>(&msg.payload) else { continue };
+                if let Some(modules) = value.get("info").and_then(|i| i.get("module")).and_then(|m| m.as_array()) {
+                    let mut live = conn.live.write().await;
+                    for (id, model) in modules.iter().filter_map(|m| status::ams_module(m.get("name")?.as_str()?)) {
+                        live.ams_models.insert(id, model.to_string());
+                    }
+                    drop(live);
+                    conn.tick.send_modify(|t| *t += 1);
+                }
                 if let Some(print) = value.get("print") {
                     // Answers to commands carry `result` (and `reason` when refused).
                     if let Some(cmd) = print.get("command").and_then(|c| c.as_str()).filter(|c| *c != "push_status")
@@ -515,9 +606,24 @@ mod tests {
         assert_eq!(p1["print"]["subtask_name"], "Toy_egg");
         let h2 = build_print_command("Toy_egg.3mf", "Metadata/plate_1.gcode", &[0], &PrintOptions::default(), true);
         assert_eq!(h2["print"]["url"], "ftp:///Toy_egg.3mf");
-        assert_eq!(refusal(Some(&json!({"command": "project_file", "result": "FAIL", "reason": "file not found"}))).as_deref(), Some("file not found"));
-        assert_eq!(refusal(Some(&json!({"command": "project_file", "result": "SUCCESS"}))), None);
-        assert_eq!(refusal(Some(&json!({"command": "ledctrl", "result": "FAIL"}))), None);
+        assert_eq!(refusal(Some(&json!({"command": "project_file", "result": "FAIL", "reason": "file not found"})), "project_file").as_deref(), Some("file not found"));
+        assert_eq!(refusal(Some(&json!({"command": "project_file", "result": "SUCCESS"})), "project_file"), None);
+        assert_eq!(refusal(Some(&json!({"command": "ledctrl", "result": "FAIL"})), "project_file"), None);
+    }
+
+    #[test]
+    fn drying_commands() {
+        let d = DrySetting { temp: 70, hours: 8, rotate: true };
+        let start = drying_command(128, Some(&d));
+        let p = &start["print"];
+        assert_eq!(p["command"], "ams_filament_drying");
+        assert_eq!((p["ams_id"].clone(), p["temp"].clone(), p["duration"].clone()), (json!(128), json!(70), json!(8)));
+        assert_eq!((p["mode"].clone(), p["cooling_temp"].clone(), p["rotate_tray"].clone()), (json!(1), json!(45), json!(true)));
+        let stop = drying_command(0, None);
+        assert_eq!((stop["print"]["ams_id"].clone(), stop["print"]["mode"].clone()), (json!(0), json!(0)));
+        let fail = json!({"command": "ams_filament_drying", "result": "fail", "reason": "power"});
+        assert_eq!(refusal(Some(&fail), "ams_filament_drying").as_deref(), Some("power"));
+        assert_eq!(refusal(Some(&fail), "project_file"), None);
     }
 
     #[test]

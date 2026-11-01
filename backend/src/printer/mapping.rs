@@ -177,6 +177,8 @@ mod tests {
             spool_g: None,
             info_idx: None,
             active: false,
+            dry_temp: None,
+            dry_hours: None,
             uuid: None,
         }
     }

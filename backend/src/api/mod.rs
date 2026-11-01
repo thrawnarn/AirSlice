@@ -83,6 +83,7 @@ pub fn router(state: Shared) -> Router<Shared> {
         .route("/printers/{id}/trays/{tray}", post(printers::set_tray))
         .route("/printers/{id}/trays/{tray}/reread", post(printers::reread_tray))
         .route("/printers/{id}/trays/{tray}/spool", post(printers::link_spool))
+        .route("/printers/{id}/ams/{unit}/dry", post(printers::start_drying).delete(printers::stop_drying))
         .route("/printers/{id}/spools", get(printers::spools))
         .route("/printers/{id}/camera.jpg", get(printers::camera))
         .route("/ha/cameras", get(printers::ha_cameras))

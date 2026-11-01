@@ -227,6 +227,9 @@ export interface Tray {
   /** RFID tag id of the spool. */
   uuid?: string | null;
   active: boolean;
+  /** Drying values from the spool's RFID tag. */
+  dry_temp?: number | null;
+  dry_hours?: number | null;
 }
 
 export interface TrayFilament {
@@ -345,6 +348,11 @@ export interface AmsUnit {
   temp: number | null;
   /** Drying time left in minutes, while drying. */
   dry_minutes?: number | null;
+  model?: string | null;
+  /** Highest drying temperature in °C; none when the unit can't dry. */
+  dry_max_temp?: number | null;
+  /** Feeds the running print, so the printer won't dry it. */
+  in_print?: boolean;
 }
 
 /** A job as the printer card shows it. */

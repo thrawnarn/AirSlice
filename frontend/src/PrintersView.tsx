@@ -1,3 +1,4 @@
+import { DryingControl } from "./Drying";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { api } from "./api";
 import type { FtpDataMode, JobRef, MachineProfile, Printer, ProfileChoices, QueueEntry, Tray } from "./types";
@@ -512,11 +513,14 @@ function PrinterCard({
                 <b>{unit.name}</b>
                 {unit.humidity_pct != null && <span className="faint">{tr("Humidity {0} %", [unit.humidity_pct])}</span>}
                 {unit.temp != null && <span className="faint num">{Math.round(unit.temp)} °C</span>}
-                {i === 0 && (
-                  <button type="button" className="linkish small pc-trays-link" onClick={() => setShowTrays(true)}>
-                    {tr("Change trays")}
-                  </button>
-                )}
+                <span className="pc-unit-actions">
+                  {s.connected && <DryingControl printer={printer} unit={unit} trays={trays} />}
+                  {i === 0 && (
+                    <button type="button" className="linkish small" onClick={() => setShowTrays(true)}>
+                      {tr("Change trays")}
+                    </button>
+                  )}
+                </span>
               </div>
               <div className="rail">{trays.map(spool)}</div>
             </div>

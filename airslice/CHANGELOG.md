@@ -4,6 +4,7 @@
 
 - History on a phone: swipe a job to the right to remove it. On a computer the ✕ button stays and now asks first.
 - Unlinking the Bambu Lab account or removing the Thingiverse token asks first.
+- Dry filament from the printer card on an AMS 2 Pro or AMS HT: temperature, hours and spool turning, with values suggested from what's loaded. Shows the time left and can be stopped. A unit feeding the running print can't dry, a print can't start from a unit that's drying, and the plug's auto-off waits for drying to finish.
 
 ## 0.1.1
 

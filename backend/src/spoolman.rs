@@ -283,7 +283,7 @@ mod tests {
     fn finds_spools_by_tag_or_link() {
         let mk = |id: i32, uuid: Option<&str>| Tray {
             id, ams: Some(0), slot: Some(id as u32), kind: "PLA".into(), color: "#FFFFFF".into(), name: None, remain: None, spool_g: None, info_idx: None,
-            uuid: uuid.map(str::to_string), active: false,
+            uuid: uuid.map(str::to_string), active: false, dry_temp: None, dry_hours: None,
         };
         let (t0, t1, t2) = (mk(0, Some("abc")), mk(1, None), mk(2, None));
         let spools = vec![spool(10, Some("ABC"), None), spool(11, None, None)];
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn prices_trays_from_spoolman() {
         let mk = |id: i32, kind: &str, color: &str| Tray {
-            id, ams: Some(0), slot: Some(id as u32), kind: kind.into(), color: color.into(), name: None, remain: None, spool_g: None, info_idx: None, uuid: None, active: false,
+            id, ams: Some(0), slot: Some(id as u32), kind: kind.into(), color: color.into(), name: None, remain: None, spool_g: None, info_idx: None, uuid: None, active: false, dry_temp: None, dry_hours: None,
         };
         let (t0, t1, t2) = (mk(0, "PLA", "#000000"), mk(1, "PLA", "#C12E1F"), mk(2, "PETG", "#FFFFFF"));
         let mut red_a = spool(3, None, Some(0.13));

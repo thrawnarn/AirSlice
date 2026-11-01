@@ -210,7 +210,7 @@ pub async fn find_sensors(state: &Shared, switch: &str) -> (Option<String>, Opti
 }
 
 /// Every minute: turn plugs off for printers whose print ended, that have
-/// nothing queued or waiting, and have been idle with a cool nozzle for the
+/// nothing queued or waiting, no AMS drying, and have been idle with a cool nozzle for the
 /// printer's `power_off_after_min`. Turning the plug on by hand doesn't arm it.
 pub async fn watch(state: Shared) {
     loop {
@@ -228,7 +228,8 @@ pub async fn watch(state: Shared) {
                         })
                 })
                 .await;
-            let resting = s.connected && !s.is_busy() && !pending && s.nozzle_temp.is_some_and(|t| t < 50.0);
+            let drying = s.ams_units.iter().any(|u| u.dry_minutes.is_some());
+            let resting = s.connected && !s.is_busy() && !pending && !drying && s.nozzle_temp.is_some_and(|t| t < 50.0);
             let since = {
                 let mut g = IDLE.lock().unwrap_or_else(|e| e.into_inner());
                 let Some(entry) = g.get_or_insert_with(HashMap::new).get_mut(&p.id) else { continue };
