@@ -16,6 +16,8 @@ Environment:
   AMS_MODULE=n3f/0 what the AMS is (default n3f/0 = AMS 2 Pro, ams/0 = original AMS)
   AMS_HT=1        add an AMS HT (unit 128)
   DRY_REFUSE=why  refuse ams_filament_drying with this reason
+  DRY_IGNORE=1    answer ams_filament_drying with success and do nothing, like a P1S
+  DRY_TIME=N      the first AMS is already drying, N minutes left (started on the screen)
   HMS=attr:code   report an active HMS message (hex, e.g. 05000500:00010007)
 
 Port 990 is privileged: run as root on Linux (e.g. sudo), or in a container.
@@ -150,6 +152,9 @@ STATE = {
 
 AMS_MODULE = os.environ.get("AMS_MODULE", "n3f/0")
 DRY_REFUSE = os.environ.get("DRY_REFUSE", "")
+DRY_IGNORE = os.environ.get("DRY_IGNORE", "")
+if os.environ.get("DRY_TIME"):
+    STATE["ams"]["ams"][0]["dry_time"] = int(os.environ["DRY_TIME"])
 if os.environ.get("AMS_HT"):
     STATE["ams"]["ams"].append({"id": "128", "humidity": "3", "humidity_raw": "30", "temp": "24.0", "tray": [
         {"id": "0", "tray_type": "PA-CF", "tray_color": "222222FF", "remain": 60, "tray_temp": "80", "tray_time": "12"},
@@ -224,6 +229,8 @@ async def device():
             p = payload["print"]
             if DRY_REFUSE:
                 await report({"command": cmd, "result": "fail", "reason": DRY_REFUSE})
+            elif DRY_IGNORE:
+                await report({"command": cmd, "result": "success", "reason": "success"})
             else:
                 for unit in STATE["ams"]["ams"]:
                     if int(unit["id"]) == p["ams_id"]:

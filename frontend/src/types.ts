@@ -393,6 +393,8 @@ export interface Printer {
   energy_sensor?: string | null;
   /** Turn the plug off this long after a print; 0 = never. */
   power_off_after_min?: number;
+  /** False for models known to ignore the command: drying only from their screen. */
+  can_start_drying?: boolean;
   /** `on_secs`: seconds since the plug went on while the printer hasn't answered; `off_in`: seconds to auto-off. */
   power?: { on: boolean | null; watts: number | null; off_in: number | null; on_secs?: number | null } | null;
   enabled: boolean;

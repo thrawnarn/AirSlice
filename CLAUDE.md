@@ -171,7 +171,11 @@ screenshots).
   Pro up to 65 °C, AMS HT 85 °C. The model comes from `{"info":{"command":"get_version"}}`
   → `info.module[].name` (`n3f/0`, `n3s/128`, `ams/0`, `ams_f1/0`), `dry_time` in the
   report is minutes left, `tray_temp`/`tray_time` the spool's own values. A unit feeding
-  a print can't dry (`AmsUnit::in_print`). Not yet run on a real printer.
+  a print can't dry (`AmsUnit::in_print`). A real P1S (firmware 01.10, 2026-11-01) answers
+  the command with "success" and ignores it, as ha-bambulab #1448/#1738 report for P1S/P1P;
+  only a changed report counts as started. Started on its screen, it reports `dry_time`
+  and `info` 2023/2024 (bits 4–7 = 2). `ignores_drying_command` hides the controls on P1S/P1P;
+  everywhere else they're unconfirmed and the sheet asks for a report on GitHub.
 - Build plates (`curr_bed_type` values): `Textured PEI Plate`, `Cool Plate`,
   `Supertack Plate` (Orca also accepts "SuperTack Plate" and saves it lower-t),
   `Textured Cool Plate`, `Engineering Plate`, `High Temp Plate`. An unknown value falls
@@ -237,7 +241,8 @@ screenshots).
   device_class. Uses the notifications' HA endpoint. `jobs::print` to an offline printer
   turns an off plug on, then the normal Waiting flow. Auto-off (`power_off_after_min`)
   is armed only by `events::print_ended` (`power::arm`), counts from idle + nozzle
-  < 50 °C + nothing queued/waiting/sending, checked every 60 s; a new print disarms.
+  < 50 °C + nothing queued/waiting/sending + no AMS drying, checked every 60 s; a new
+  print or the plug seen off (e.g. an HA automation got there first) disarms.
   Energy: meter read at start (`PrintStart::energy_start`) and end → `energy_kwh`. Test
   without touching real plugs: run with `env -u SUPERVISOR_TOKEN` and `ha_url` pointing
   at a local mock of /api/states, /api/services/switch/*, /api/template.

@@ -4,7 +4,9 @@
 
 - History on a phone: swipe a job to the right to remove it. On a computer the ✕ button stays and now asks first.
 - Unlinking the Bambu Lab account or removing the Thingiverse token asks first.
-- Dry filament from the printer card on an AMS 2 Pro or AMS HT: temperature, hours and spool turning, with values suggested from what's loaded. Shows the time left and can be stopped. A unit feeding the running print can't dry, a print can't start from a unit that's drying, and the plug's auto-off waits for drying to finish.
+- Drying an AMS 2 Pro or AMS HT shows on the printer card with the time left, also when it was started on the printer's screen. A print can't start from a unit that's drying, and the plug's auto-off waits for drying to finish.
+- Start and stop drying from the printer card, with temperature, hours and spool turning suggested from what's loaded. Not on a P1S or P1P, which ignore the command (start it on the printer's screen). Unconfirmed on other printers, so AirSlice says so first and asks you to report whether it worked.
+- The plug's auto-off no longer turns off a plug you turned on by hand, after something else had turned it off following a print.
 
 ## 0.1.1
 

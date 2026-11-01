@@ -1,7 +1,7 @@
 use crate::{
     error::{ApiResult, AppError},
     models::{FtpDataMode, Printer, now},
-    printer::{DrySetting, TraySetting, ftp, status::{EXTERNAL_TRAY, StatusView}},
+    printer::{DrySetting, TraySetting, ftp, ignores_drying_command, status::{EXTERNAL_TRAY, StatusView}},
     slicer::{BUILD_PLATES, BuildPlate, build_plate},
     state::Shared,
 };
@@ -32,6 +32,8 @@ pub struct PrinterView {
     pub power_sensor: Option<String>,
     pub energy_sensor: Option<String>,
     pub power_off_after_min: u32,
+    /// False for models known to ignore the command: drying only from their screen.
+    pub can_start_drying: bool,
     /// The plug's state and power draw, when it has one.
     pub power: Option<crate::power::PowerView>,
     pub enabled: bool,
@@ -100,6 +102,7 @@ pub async fn view(state: &Shared, p: &Printer, default_id: Option<&str>) -> Prin
         power_sensor: p.power_sensor.clone(),
         energy_sensor: p.energy_sensor.clone(),
         power_off_after_min: p.power_off_after_min,
+        can_start_drying: !ignores_drying_command(&p.printer_model, &p.machine_profile),
         power: crate::power::view(state, p).await,
         enabled: p.enabled,
         is_default: default_id == Some(p.id.as_str()),
@@ -595,14 +598,21 @@ pub struct DryBody {
     rotate: bool,
 }
 
-/// Start drying an AMS 2 Pro or AMS HT. `started` is false when the printer
-/// hasn't confirmed yet.
+fn drying_from_here(p: &Printer) -> ApiResult<()> {
+    if ignores_drying_command(&p.printer_model, &p.machine_profile) {
+        return Err(AppError::bad_request(format!("{} ignores drying commands, so start and stop it on the printer's screen", p.name)));
+    }
+    Ok(())
+}
+
+/// Start drying an AMS 2 Pro or AMS HT. `started` is false when the unit
+/// hasn't reported drying yet.
 pub async fn start_drying(
     State(state): State<Shared>,
     Path((id, unit)): Path<(String, u32)>,
     Json(body): Json<DryBody>,
 ) -> ApiResult<Json<Value>> {
-    load(&state, &id).await?;
+    drying_from_here(&load(&state, &id).await?)?;
     let status = with_units_in_print(&state, &id, state.printers.status(&id).await).await;
     let Some(u) = status.ams_units.iter().find(|u| u.id == unit) else {
         return Err(AppError::bad_request("the printer isn't reporting that AMS"));
@@ -625,7 +635,7 @@ pub async fn start_drying(
 }
 
 pub async fn stop_drying(State(state): State<Shared>, Path((id, unit)): Path<(String, u32)>) -> ApiResult<Json<Value>> {
-    load(&state, &id).await?;
+    drying_from_here(&load(&state, &id).await?)?;
     let stopped = state.printers.set_drying(&id, unit, None).await.map_err(|e| AppError::bad_gateway(format!("{e:#}")))?;
     Ok(Json(json!({"stopped": stopped})))
 }

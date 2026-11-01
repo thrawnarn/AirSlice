@@ -209,14 +209,28 @@ pub async fn find_sensors(state: &Shared, switch: &str) -> (Option<String>, Opti
     (parts.next().flatten(), parts.next().flatten())
 }
 
+fn disarm(printer_id: &str) {
+    if let Some(m) = IDLE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        m.remove(printer_id);
+    }
+}
+
 /// Every minute: turn plugs off for printers whose print ended, that have
 /// nothing queued or waiting, no AMS drying, and have been idle with a cool nozzle for the
-/// printer's `power_off_after_min`. Turning the plug on by hand doesn't arm it.
+/// printer's `power_off_after_min`. Turning the plug on by hand doesn't arm it, and a
+/// plug something else turned off is done: it stays disarmed when it comes back on.
 pub async fn watch(state: Shared) {
     loop {
         tokio::time::sleep(Duration::from_secs(60)).await;
         let printers = state.store.read(|d| d.printers.clone()).await;
         for p in printers.iter().filter(|p| p.power_switch.is_some() && p.power_off_after_min > 0) {
+            if !IDLE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|m| m.contains_key(&p.id)) {
+                continue;
+            }
+            if view(&state, p).await.and_then(|v| v.on) == Some(false) {
+                disarm(&p.id);
+                continue;
+            }
             let s = state.printers.status(&p.id).await;
             let pending = state
                 .store
@@ -252,9 +266,7 @@ pub async fn watch(state: Shared) {
                 Ok(()) => tracing::info!("turned off {}'s plug after {} min idle", p.name, p.power_off_after_min),
                 Err(e) => tracing::warn!("couldn't turn off {}'s plug: {e:#}", p.name),
             }
-            if let Some(m) = IDLE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-                m.remove(&p.id);
-            }
+            disarm(&p.id);
         }
     }
 }

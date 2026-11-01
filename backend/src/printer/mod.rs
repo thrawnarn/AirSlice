@@ -221,8 +221,9 @@ impl PrinterManager {
         self.publish(id, reread_command(tray)?).await
     }
 
-    /// Start drying an AMS unit, or stop it. `Ok(false)` when the printer hasn't
-    /// answered or changed within 10 s, which doesn't mean it refused.
+    /// Start drying an AMS unit, or stop it. `Ok(false)` when the unit's report
+    /// hasn't changed within 10 s, which doesn't mean it refused. A "success" reply
+    /// proves nothing: a P1S sends one and then ignores the command.
     pub async fn set_drying(&self, id: &str, unit: u32, dry: Option<&DrySetting>) -> anyhow::Result<bool> {
         let conn = self.conn(id).await?;
         let mut rx = conn.tick.subscribe();
@@ -248,9 +249,6 @@ impl PrinterManager {
             let reply = conn.live.read().await.reply.clone();
             if let Some(reason) = refusal(reply.as_ref(), DRYING_COMMAND) {
                 bail!("the printer refused: {reason}");
-            }
-            if reply.is_some_and(|r| r.get("command").and_then(|c| c.as_str()) == Some(DRYING_COMMAND)) {
-                return Ok(true);
             }
             if !asked && started.elapsed() >= wait / 2 {
                 asked = true;
@@ -392,6 +390,12 @@ pub struct DrySetting {
 }
 
 const DRYING_COMMAND: &str = "ams_filament_drying";
+
+/// Printers that answer `ams_filament_drying` with "success" and then do nothing.
+/// They can dry from their own screen, and report it like any other.
+pub fn ignores_drying_command(printer_model: &str, machine_profile: &str) -> bool {
+    [printer_model, machine_profile].iter().any(|name| name.split_whitespace().any(|w| w.eq_ignore_ascii_case("P1S") || w.eq_ignore_ascii_case("P1P")))
+}
 
 /// `mode` 1 starts and 0 stops. The printer ignores a `cooling_temp` under 45.
 pub fn drying_command(unit: u32, dry: Option<&DrySetting>) -> Value {
@@ -609,6 +613,14 @@ mod tests {
         assert_eq!(refusal(Some(&json!({"command": "project_file", "result": "FAIL", "reason": "file not found"})), "project_file").as_deref(), Some("file not found"));
         assert_eq!(refusal(Some(&json!({"command": "project_file", "result": "SUCCESS"})), "project_file"), None);
         assert_eq!(refusal(Some(&json!({"command": "ledctrl", "result": "FAIL"})), "project_file"), None);
+    }
+
+    #[test]
+    fn knows_which_printers_ignore_the_drying_command() {
+        assert!(ignores_drying_command("Bambu Lab P1S", "Bambu Lab P1S 0.4 nozzle"));
+        assert!(ignores_drying_command("", "Bambu Lab P1P 0.4 nozzle"));
+        assert!(!ignores_drying_command("Bambu Lab X1 Carbon", "Bambu Lab X1 Carbon 0.4 nozzle"));
+        assert!(!ignores_drying_command("Bambu Lab H2D", "Bambu Lab H2D 0.4 nozzle"));
     }
 
     #[test]
