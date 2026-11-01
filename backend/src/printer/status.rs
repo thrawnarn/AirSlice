@@ -8,7 +8,7 @@ pub const EXTERNAL_TRAY: i32 = 254;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Tray {
-    /// Global id: ams_id * 4 + slot, or 254 for the external spool.
+    /// Global id: ams_id * 4 + slot, an AMS HT's unit id, or 254 for the external spool.
     pub id: i32,
     pub ams: Option<u32>,
     pub slot: Option<u32>,

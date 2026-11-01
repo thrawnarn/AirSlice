@@ -351,9 +351,13 @@ pub struct TraySetting {
 }
 
 /// (ams_id, slot) as the firmware addresses a global tray id; the external
-/// spool is ams 255, slot 254.
+/// spool is ams 255, slot 254, and an AMS HT's one slot has its unit's id.
 fn tray_address(tray: i32) -> (i32, i32) {
-    if tray == EXTERNAL_TRAY { (255, EXTERNAL_TRAY) } else { (tray / 4, tray % 4) }
+    match tray {
+        EXTERNAL_TRAY => (255, EXTERNAL_TRAY),
+        t if t >= 128 => (t, 0),
+        t => (t / 4, t % 4),
+    }
 }
 
 pub fn tray_setting_command(tray: i32, s: &TraySetting) -> Value {
@@ -649,9 +653,13 @@ mod tests {
         assert_eq!((p["nozzle_temp_min"].clone(), p["nozzle_temp_max"].clone()), (json!(190), json!(240)));
         let ext = &tray_setting_command(EXTERNAL_TRAY, &pla)["print"];
         assert_eq!((ext["ams_id"].clone(), ext["tray_id"].clone()), (json!(255), json!(254)));
+        let ht = &tray_setting_command(129, &pla)["print"];
+        assert_eq!((ht["ams_id"].clone(), ht["tray_id"].clone(), ht["slot_id"].clone()), (json!(129), json!(0), json!(0)));
 
         let r = &reread_command(5).unwrap()["print"];
         assert_eq!((r["command"].clone(), r["ams_id"].clone(), r["slot_id"].clone()), (json!("ams_get_rfid"), json!(1), json!(1)));
+        let r = &reread_command(128).unwrap()["print"];
+        assert_eq!((r["ams_id"].clone(), r["slot_id"].clone()), (json!(128), json!(0)));
         assert!(reread_command(EXTERNAL_TRAY).is_err());
     }
 
