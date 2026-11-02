@@ -3,6 +3,11 @@
 ## Unreleased
 
 - History on a phone: swipe a job to the left to remove it, instead of to the right.
+- Prints started on the printer or from another app are followed too and kept in History, marked "Started outside AirSlice", with a photo of the result, notifications and the plug's auto-off. AirSlice doesn't know their filament, so their cost is print time only.
+- Prints that ran now stay in History for good, until you remove them. The "Jobs to keep" option only counts jobs that never printed.
+- Multi-colour prints show how much filament went to purging and the prime tower.
+- New API for the print history (`GET /api/prints`), and `POST /api/prints/import` with `tools/import-arkiv` for prints from an older log.
+- New Home Assistant integration in `custom_components/airslice`: print sensors, `airslice.list_prints` and result photos as media.
 
 ## 0.1.3
 

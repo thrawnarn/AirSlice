@@ -33,7 +33,7 @@ pub async fn resolve(state: &Shared, input: &str) -> anyhow::Result<ResolvedMode
             let token = thingiverse_token(state).await?;
             sources::thingiverse::resolve(&state.http, &link, &token).await?
         }
-        Source::Upload => bail!("not a link"),
+        Source::Upload | Source::External => bail!("not a link"),
     };
     state.cache_model(&cache_key, &model).await;
     Ok(model)
@@ -319,7 +319,7 @@ pub async fn create(
     Ok(job)
 }
 
-async fn insert_job(state: &Shared, job: &Job) -> anyhow::Result<()> {
+pub(crate) async fn insert_job(state: &Shared, job: &Job) -> anyhow::Result<()> {
     let max = state.cfg.max_jobs;
     let job = job.clone();
     let removed = state
@@ -327,9 +327,13 @@ async fn insert_job(state: &Shared, job: &Job) -> anyhow::Result<()> {
         .update(|d| {
             d.jobs.insert(0, job);
             let mut removed = Vec::new();
-            // Drop the oldest jobs, but never favourites or queued ones.
-            while d.jobs.len() > max {
-                let Some(pos) = d.jobs.iter().rposition(|j| !j.favorite && j.state != JobState::Queued && !j.state.in_use())
+            // Drop the oldest jobs, but never favourites, queued ones or
+            // prints that ran: those are the print history.
+            while d.jobs.iter().filter(|j| !is_print_record(j)).count() > max {
+                let Some(pos) = d
+                    .jobs
+                    .iter()
+                    .rposition(|j| !j.favorite && j.state != JobState::Queued && !j.state.in_use() && !is_print_record(j))
                 else {
                     break;
                 };
@@ -344,7 +348,12 @@ async fn insert_job(state: &Shared, job: &Job) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn new_job(source: Source, url: String, model_id: String, title: String, cover: Option<String>, file: ModelFile) -> Job {
+/// A print that ended: part of the history for good, unless someone removes it.
+fn is_print_record(j: &Job) -> bool {
+    j.print.as_ref().is_some_and(|p| p.outcome.is_some())
+}
+
+pub(crate) fn new_job(source: Source, url: String, model_id: String, title: String, cover: Option<String>, file: ModelFile) -> Job {
     let t = now();
     Job {
         id: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(),
@@ -475,7 +484,7 @@ async fn download(state: &Shared, id: &str, model: &ResolvedModel, file: &ModelF
             let token = thingiverse_token(state).await?;
             sources::thingiverse::download(&state.http, &token, &file.id, &dest).await?
         }
-        Source::Upload => bail!("uploads are not downloaded"),
+        Source::Upload | Source::External => bail!("uploads are not downloaded"),
     };
     log(state, id, format!("Downloaded {:.1} MB", size as f64 / 1_048_576.0)).await;
     finish_input(state, id, name).await
@@ -1056,7 +1065,8 @@ pub fn print_update(status: &crate::printer::status::StatusView, task: &str) -> 
     if !status.connected {
         return PrintUpdate::Nothing;
     }
-    let ours = status.task_name.as_deref() == Some(task);
+    let reported = status.task_name.as_deref().map(|r| r.trim_end_matches(".3mf").trim_end_matches(".gcode"));
+    let ours = reported == Some(task);
     let state = status.state.as_deref().unwrap_or("");
     match (ours, state) {
         (true, "FINISH") => PrintUpdate::Ended(PrintOutcome::Finished, None),
@@ -1076,6 +1086,7 @@ pub fn print_update(status: &crate::printer::status::StatusView, task: &str) -> 
 pub async fn watch_prints(state: Shared) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        crate::prints::notice_external(&state).await;
         let started: Vec<Job> = state
             .store
             .read(|d| d.jobs.iter().filter(|j| j.state == JobState::Started && j.print.is_some()).cloned().collect())
@@ -1087,10 +1098,10 @@ pub async fn watch_prints(state: Shared) {
             // never started, or the printer forgot it): result unknown.
             if status.connected
                 && !status.is_busy()
-                && status.task_name.as_deref() != Some(print.task_name())
+                && !print.is_task(status.task_name.as_deref())
                 && now() - print.started_at > 300
             {
-                end_print(&state, &job.id, PrintOutcome::Unknown, None, None).await;
+                end_print(&state, &job.id, PrintOutcome::Unknown, None, &status).await;
                 continue;
             }
             match print_update(&status, print.task_name()) {
@@ -1112,19 +1123,21 @@ pub async fn watch_prints(state: Shared) {
                         let _ = update_job(&state, &job.id, |j| {
                             if let Some(pr) = j.print.as_mut() {
                                 pr.progress = Some(p);
+                                pr.layer = status.layer;
+                                pr.total_layers = status.total_layers;
                             }
                         })
                         .await;
                     }
                 }
-                PrintUpdate::Ended(outcome, code) => end_print(&state, &job.id, outcome, code, status.percent).await,
+                PrintUpdate::Ended(outcome, code) => end_print(&state, &job.id, outcome, code, &status).await,
                 PrintUpdate::Nothing => {}
             }
         }
     }
 }
 
-async fn end_print(state: &Shared, id: &str, outcome: PrintOutcome, code: Option<i64>, percent: Option<i64>) {
+async fn end_print(state: &Shared, id: &str, outcome: PrintOutcome, code: Option<i64>, status: &crate::printer::status::StatusView) {
     let printer_name = match get_job(state, id).await.and_then(|j| j.print).map(|p| p.printer_id) {
         Some(pid) => find_printer(state, Some(&pid)).await.map(|p| p.name).unwrap_or_else(|_| "the printer".into()),
         None => return,
@@ -1137,8 +1150,14 @@ async fn end_print(state: &Shared, id: &str, outcome: PrintOutcome, code: Option
         pr.error_code = code;
         if outcome == PrintOutcome::Finished {
             pr.progress = Some(100);
-        } else if let Some(p) = percent.filter(|p| *p > 0) {
+        } else if let Some(p) = status.percent.filter(|p| *p > 0) {
             pr.progress = Some(p);
+        }
+        // Only when the printer is still on this print: for an unknown end
+        // it reports another print's layers.
+        if outcome != PrintOutcome::Unknown {
+            pr.layer = status.layer.or(pr.layer);
+            pr.total_layers = status.total_layers.or(pr.total_layers);
         }
         let took = fmt_duration((ended - pr.started_at).max(0) as u64);
         match outcome {
@@ -1397,6 +1416,9 @@ async fn send(
                     first_layer_done: false,
                     energy_start,
                     energy_kwh: None,
+                    layer: None,
+                    total_layers: None,
+                    waste: None,
                 });
                 j.push_log(format!("Print started on {}", printer.name));
             })
@@ -1830,6 +1852,9 @@ pub async fn reprint(state: &Shared, id: &str) -> anyhow::Result<Job> {
     let old = get_job(state, id).await.ok_or_else(|| anyhow!("job not found"))?;
     if old.state.is_busy() {
         bail!("job is busy ({:?})", old.state);
+    }
+    if old.source == Source::External {
+        bail!("This print wasn't started from AirSlice, so AirSlice has no file to print again.");
     }
     let from = job_dir(state, &old.id);
     let gone = match &old.input_file {

@@ -1,4 +1,4 @@
-export type Source = "makerworld" | "printables" | "thingiverse" | "upload";
+export type Source = "makerworld" | "printables" | "thingiverse" | "upload" | "external";
 
 export interface FilamentInfo {
   type: string;

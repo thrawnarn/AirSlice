@@ -227,7 +227,7 @@ const STEPS: { key: string; label: string; states: string[] }[] = [
 
 function stepIndex(job: Job): number {
   if (job.state === "failed") {
-    if (job.slice) return 3;
+    if (job.slice || job.source === "external") return 3;
     if (job.inspection) return 1;
     return 0;
   }
@@ -326,10 +326,13 @@ function JobFlow({ id, printers, reset, openJob }: { id: string; printers: Print
         </p>
       </div>
 
+      {job.source === "external" && (
+        <Notice>{tr("Started outside AirSlice, on the printer or from another app. AirSlice keeps it in the history but has no file to print it again, and it only knows the filament used if a log said so.")}</Notice>
+      )}
       {job.state === "failed" && job.error && <Notice tone="err">{job.error}</Notice>}
       {error && <Notice tone="err">{error}</Notice>}
 
-      {job.files_removed && !["started", "finished"].includes(job.state) && (
+      {job.source !== "external" && job.files_removed && !["started", "finished"].includes(job.state) && (
         <>
           <Notice>{tr("The files of this job were removed to save space.")}</Notice>
           <button className="btn go" onClick={() => (job.source === "upload" ? reset() : reprint(job.id, openJob))}>
@@ -388,7 +391,7 @@ function JobFlow({ id, printers, reset, openJob }: { id: string; printers: Print
           </div>
         </div>
       )}
-      {job.state === "failed" && !job.inspection && (
+      {job.state === "failed" && !job.inspection && job.source !== "external" && (
         <button className="btn block" onClick={reset} style={{ marginTop: 12 }}>
           {tr("Start over")}
         </button>
@@ -1477,9 +1480,11 @@ function Started({
         <button className={`btn grow ${canRestart ? "" : "primary"}`} onClick={reset}>
           {tr("New print")}
         </button>
-        <button className="btn grow" onClick={() => reprint(job.id, openJob)}>
-          {tr("Change settings")}
-        </button>
+        {job.source !== "external" && (
+          <button className="btn grow" onClick={() => reprint(job.id, openJob)}>
+            {tr("Change settings")}
+          </button>
+        )}
       </div>
     </section>
   );

@@ -117,7 +117,7 @@ async fn view(state: &Shared, job: Job) -> JobView {
     let mut live = None;
     if let (Some(p), JobState::Started) = (&job.print, job.state) {
         let s = state.printers.status(&p.printer_id).await;
-        if s.connected && s.task_name.as_deref() == Some(p.task_name()) {
+        if s.connected && p.is_task(s.task_name.as_deref()) {
             live = Some(json!({
                 "state": s.state, "percent": s.percent, "remaining_minutes": s.remaining_minutes,
                 "layer": s.layer, "total_layers": s.total_layers,
@@ -275,6 +275,30 @@ pub async fn layer(State(state): State<Shared>, Path((id, n)): Path<(String, usi
 }
 
 /// The picture taken when the print ended.
+/// Ended prints, newest first: the print history for Home Assistant and others.
+#[derive(Deserialize)]
+pub struct PrintsQuery {
+    printer_id: Option<String>,
+    limit: Option<usize>,
+}
+
+pub async fn prints(State(state): State<Shared>, Query(q): Query<PrintsQuery>) -> Json<Vec<crate::prints::PrintRecord>> {
+    Json(crate::prints::list(&state, q.printer_id.as_deref(), q.limit.unwrap_or(usize::MAX)).await)
+}
+
+pub async fn import_print(
+    State(state): State<Shared>,
+    Json(body): Json<crate::prints::ImportPrint>,
+) -> ApiResult<Json<crate::prints::ImportResult>> {
+    Ok(Json(crate::prints::import(&state, body).await.map_err(bad)?))
+}
+
+/// The picture of an imported or external print, as JPEG bytes.
+pub async fn set_photo(State(state): State<Shared>, Path(id): Path<String>, body: axum::body::Bytes) -> ApiResult<Json<JobView>> {
+    let job = crate::prints::set_photo(&state, &id, &body).await.map_err(bad)?;
+    Ok(Json(view(&state, job).await))
+}
+
 pub async fn photo(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult<axum::response::Response> {
     let path = state.cfg.data_dir.join("photos").join(format!("{}.jpg", id.replace(['/', '.'], "")));
     let bytes = tokio::fs::read(path).await.map_err(|_| AppError::not_found("no photo for this print"))?;

@@ -138,6 +138,10 @@ pub enum Source {
     Thingiverse,
     /// File uploaded from the phone/browser.
     Upload,
+    /// Not sent by AirSlice: started on the printer's screen, from a slicer
+    /// on a computer or by another app, or imported from an older log. The
+    /// print is in the history, but AirSlice has no file to print it again.
+    External,
 }
 
 /// A file (or MakerWorld print profile) the user can pick from a model page.
@@ -635,6 +639,14 @@ pub struct PrintStart {
     pub energy_start: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub energy_kwh: Option<f64>,
+    /// The last layer the printer reported, and how many there are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_layers: Option<i64>,
+    /// Filament that went to colour changes rather than the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waste: Option<PrintWaste>,
 }
 
 impl PrintStart {
@@ -642,6 +654,23 @@ impl PrintStart {
     pub fn task_name(&self) -> &str {
         self.remote_file.trim_end_matches(".3mf").trim_end_matches(".gcode")
     }
+
+    /// Is this what the printer reports as its current task?
+    pub fn is_task(&self, reported: Option<&str>) -> bool {
+        reported.is_some_and(|r| r.trim_end_matches(".3mf").trim_end_matches(".gcode") == self.task_name())
+    }
+}
+
+/// Purge and prime tower of a multi-colour print, from the sliced G-code. Part
+/// of the filament weight and cost already, not on top of them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PrintWaste {
+    pub changes: u32,
+    pub flush_g: f64,
+    pub tower_g: f64,
+    /// What that filament cost, when its price is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

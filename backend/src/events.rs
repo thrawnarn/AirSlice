@@ -7,7 +7,7 @@ use crate::{
     notify::{self, Pictures},
     state::Shared,
 };
-use std::sync::OnceLock;
+use std::{collections::HashMap, sync::OnceLock};
 
 /// The owner's time zone: `TZ` (the Supervisor sets it for add-ons), else
 /// Home Assistant's own setting, else UTC.
@@ -295,7 +295,18 @@ pub async fn problem(state: &Shared, job: &Job) {
 /// What the print cost and used: stored on the job, and booked in Spoolman
 /// when that is turned on. A print that stopped part-way counts its share.
 async fn account(state: &Shared, job: &Job) {
-    let (Some(slice), Some(print)) = (&job.slice, &job.print) else { return };
+    let Some(print) = &job.print else { return };
+    // A print started elsewhere: AirSlice knows the time, not the filament.
+    let Some(slice) = &job.slice else {
+        let hours = print.ended_at.map(|e| (e - print.started_at).max(0) as f64 / 3600.0);
+        let costs = state.store.read(|d| d.cost.clone()).await;
+        let cost = crate::spoolman::cost(&[], &HashMap::new(), hours, &costs, true).filter(|c| c.machine.is_some());
+        let _ = crate::jobs::update_job(state, &job.id, |j| {
+            j.cost = cost.map(|c| crate::models::Cost { filament: None, ..c });
+        })
+        .await;
+        return;
+    };
     let share = match print.outcome {
         Some(PrintOutcome::Finished) => 1.0,
         Some(PrintOutcome::Failed | PrintOutcome::Cancelled) => print.progress.unwrap_or(0).clamp(0, 100) as f64 / 100.0,
@@ -307,6 +318,7 @@ async fn account(state: &Shared, job: &Job) {
     let hours = print.ended_at.map(|e| (e - print.started_at).max(0) as f64 / 3600.0);
     let costs = state.store.read(|d| d.cost.clone()).await;
     let cost = crate::spoolman::cost(&use_g, &prices, hours, &costs, true);
+    let waste = crate::prints::waste(state, job, slice, print, &prices, &costs).await;
     let settings = state.store.read(|d| d.spoolman.clone()).await;
     let booked = if settings.book_usage && !spools.is_empty() && share > 0.0 {
         crate::spoolman::book(state, &settings, &use_g, &spools).await
@@ -318,6 +330,9 @@ async fn account(state: &Shared, job: &Job) {
             j.push_log(format!("Cost: {:.2} {}", c.total, c.currency).trim_end().to_string());
         }
         j.cost = cost.clone();
+        if let Some(p) = j.print.as_mut() {
+            p.waste = waste.clone();
+        }
         if !booked.is_empty() {
             j.push_log(format!("Booked in Spoolman: {}", booked.join(", ")));
         }

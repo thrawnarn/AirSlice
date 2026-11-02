@@ -4,3 +4,5 @@ backend/target/
 data/
 tools/fake-printer/out/
 tools/fake-printer/*.pem
+__pycache__/
+.pytest_cache/

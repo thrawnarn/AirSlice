@@ -857,4 +857,6 @@ export const sv: Record<string, string> = {
   "Other files": "Andra filer",
   "Open on {0} ↗": "Öppna på {0} ↗",
   "Printed {0} times": "Utskriven {0} gånger",
+  "Started outside AirSlice": "Startad utanför AirSlice",
+  "Started outside AirSlice, on the printer or from another app. AirSlice keeps it in the history but has no file to print it again, and it only knows the filament used if a log said so.": "Startad utanför AirSlice, på skrivaren eller från en annan app. AirSlice sparar den i historiken men har ingen fil att skriva ut igen, och vet bara hur mycket filament som gick åt om en logg sa det.",
 };

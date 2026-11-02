@@ -70,7 +70,7 @@ Requests through Home Assistant's panel never need the password; the direct port
 | Log level | How much detail goes to the add-on log. `debug` shows printer traffic. |
 | Password for direct access | Optional fixed password for the direct port. Leave empty to set it in AirSlice. |
 | Slicing time limit | Stop slicing after this many seconds. |
-| Jobs to keep | Past prints kept in History; older downloaded and sliced files are deleted. |
+| Unprinted jobs to keep | Jobs that never printed kept in History, with their files. Prints that ran are always kept, until you remove them. |
 
 Downloaded and sliced files are excluded from Home Assistant backups. Printers, keys and accounts are included.
 

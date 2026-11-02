@@ -1,0 +1,64 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "Create an API key in AirSlice under Settings → API keys.",
+        "data": {
+          "url": "Address",
+          "api_key": "API key"
+        },
+        "data_description": {
+          "url": "For example http://192.168.1.10:8099"
+        }
+      },
+      "reauth_confirm": {
+        "description": "AirSlice no longer accepts the API key. Create a new one under Settings → API keys.",
+        "data": {
+          "api_key": "API key"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Can't reach AirSlice at this address.",
+      "invalid_auth": "AirSlice refused this API key.",
+      "too_old": "This AirSlice is too old. Update it and try again."
+    },
+    "abort": {
+      "already_configured": "This AirSlice is already set up.",
+      "reauth_successful": "The new API key works."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "prints": {
+        "name": "Prints",
+        "unit_of_measurement": "prints"
+      }
+    }
+  },
+  "exceptions": {
+    "not_a_print_list": {
+      "message": "{entity_id} isn't an AirSlice print sensor."
+    }
+  },
+  "services": {
+    "list_prints": {
+      "name": "List prints",
+      "description": "The prints in a printer's AirSlice history, newest first.",
+      "fields": {
+        "entity_id": {
+          "name": "Printer",
+          "description": "The printer's prints sensor."
+        },
+        "search": {
+          "name": "Search",
+          "description": "Only prints with all these words in the name."
+        },
+        "limit": {
+          "name": "Limit",
+          "description": "At most this many prints."
+        }
+      }
+    }
+  }
+}

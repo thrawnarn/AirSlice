@@ -11,7 +11,7 @@ configuration:
     name: Slicing time limit (seconds)
     description: Stop slicing a model that takes longer than this.
   max_jobs:
-    name: Jobs to keep
-    description: How many past prints to keep in History. Older downloaded and sliced files are deleted.
+    name: Unprinted jobs to keep
+    description: How many jobs that never printed to keep in History, with their files. Prints that ran are always kept, until you remove them.
 network:
   8080/tcp: Direct access (phone app, shared links, API). Leave empty to use only the Home Assistant panel.

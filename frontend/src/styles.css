@@ -289,6 +289,7 @@ label.field > small { display: block; color: var(--ink-3); font-size: 13px; marg
   border-radius: 4px; padding: 1px 6px;
   background: var(--panel-2); color: var(--ink-2);
 }
+.tag.external { display: inline-block; margin: 2px 0; background: var(--plate-soft); color: var(--plate-ink); }
 .tag.match { background: var(--plate-soft); color: var(--plate-ink); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .tag.match { color: var(--plate); } }
 

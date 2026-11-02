@@ -33,6 +33,10 @@ over a VPN or a reverse proxy.
   pulls the GHCR image (`image:` in config.yaml), so HA backups don't carry it; the image's
   `docker/entrypoint.sh` runs `run.sh` as root under the Supervisor (SUPERVISOR_TOKEN +
   /data/options.json) and drops to uid 1000 otherwise
+- `custom_components/airslice/` — Home Assistant integration (HACS-style, not part of the
+  add-on or image): reads `GET api/prints` every 60 s and on each `list_prints`, one
+  sensor per printer, photos through a media source and an authenticated view. It stores
+  nothing: AirSlice owns the history. `prints.py` is pure. `tests/ha` runs it on real HA.
 - `repository.yaml` — makes the repo an HA add-on repository
 - `.github/workflows/image.yml` — builds amd64/arm64 image to GHCR on tag `v*`
 - `Dockerfile` — frontend + backend + extracted OrcaSlicer AppImage (default 2.4.2)
@@ -41,8 +45,9 @@ over a VPN or a reverse proxy.
 ## Commands
 
 ```bash
-cd backend && cargo test            # 96 unit tests
+cd backend && cargo test            # 108 unit tests
 cd backend && cargo clippy --all-targets   # keep at zero warnings
+pytest tests/ha                     # integration, needs pytest-homeassistant-custom-component
 cd frontend && npx tsc -b && npm run build
 cd frontend && npm run dev          # proxies /api to $AIRSLICE_BACKEND or 127.0.0.1:8080
 
@@ -224,6 +229,23 @@ screenshots).
   `subtask_name` to `PrintStart::task_name()`; FINISH → finished, FAILED with
   0x0300400C → cancelled, other FAILED → failed, another task running → unknown.
   Only the outcome is stored; live progress is read from the printer per request.
+- Print history (`prints.rs`): a job with a `print.outcome` is a print record, which
+  `max_jobs` never drops (`jobs::is_print_record`). `GET api/prints` = those, by end time.
+  `notice_external` (every 5 s, in `watch_prints`) makes a `Source::External` job when a
+  connected printer runs a named task (RUNNING/PREPARE/PAUSE, not `print_type` system) and
+  no Started job is on it; it waits while any job is Uploading/Starting, since our own
+  print can show on the printer first. From there it's a normal Started job (notifications,
+  auto-off, photo). No slice, so cost is machine time only and reprint refuses.
+  `started_at` is worked back from percent/time left only when RUNNING/PAUSE at 5 %+
+  (PREPARE can still report the previous print's numbers). `PrintStart::is_task` compares
+  without file endings, since external names may keep theirs. Imports
+  (`POST prints/import`, `tools/import-arkiv`): External + `files_removed`, id = hash of
+  `key`, a `SliceOutcome` with `settings: "imported"` carrying the log's real usage (so no
+  progress share), skipped when a job has the same task ended within 15 min. A downgrade
+  can't read `source: external`, so going back to an older image needs those jobs removed.
+- Waste (`gcode::waste`): flush + prime tower grams from the plate's G-code at print end,
+  up to the last layer for a stopped print; part of the filament weight, not on top.
+  Matches `pandan_print_waste.py` on real Bambu Studio multi-colour files (2026-11-02).
 - Notifications are a list (`NotifySettings::targets`, each `NotifyTarget` has channel,
   recipient, events, photos); the HA address/token and the tap link are shared.
   `NotifySettings::migrate` (run in `Store::open`) turns the pre-alpha single setting into

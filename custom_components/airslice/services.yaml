@@ -1,0 +1,17 @@
+list_prints:
+  fields:
+    entity_id:
+      required: true
+      selector:
+        entity:
+          integration: airslice
+          domain: sensor
+    search:
+      selector:
+        text:
+    limit:
+      selector:
+        number:
+          min: 1
+          max: 10000
+          mode: box

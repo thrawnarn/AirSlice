@@ -43,7 +43,7 @@ export function StatsView({ printers }: { printers: Printer[] | null }) {
   const [hover, setHover] = useState<string | null>(null);
   usePoll(async () => {
     try {
-      setJobs(await api.get<Job[]>("jobs"));
+      setJobs(await api.get<Job[]>("jobs?limit=5000"));
     } catch {
       /* keep the last list */
     }

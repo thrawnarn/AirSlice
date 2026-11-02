@@ -1,0 +1,64 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "Skapa en API-nyckel i AirSlice under Inställningar → API-nycklar.",
+        "data": {
+          "url": "Adress",
+          "api_key": "API-nyckel"
+        },
+        "data_description": {
+          "url": "Till exempel http://192.168.1.10:8099"
+        }
+      },
+      "reauth_confirm": {
+        "description": "AirSlice godtar inte längre API-nyckeln. Skapa en ny under Inställningar → API-nycklar.",
+        "data": {
+          "api_key": "API-nyckel"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Når inte AirSlice på den här adressen.",
+      "invalid_auth": "AirSlice godtar inte den här API-nyckeln.",
+      "too_old": "Den här AirSlice är för gammal. Uppdatera den och försök igen."
+    },
+    "abort": {
+      "already_configured": "Den här AirSlice är redan inlagd.",
+      "reauth_successful": "Den nya API-nyckeln fungerar."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "prints": {
+        "name": "Utskrifter",
+        "unit_of_measurement": "utskrifter"
+      }
+    }
+  },
+  "exceptions": {
+    "not_a_print_list": {
+      "message": "{entity_id} är inte en utskriftssensor från AirSlice."
+    }
+  },
+  "services": {
+    "list_prints": {
+      "name": "Lista utskrifter",
+      "description": "Utskrifterna i en skrivares AirSlice-historik, nyast först.",
+      "fields": {
+        "entity_id": {
+          "name": "Skrivare",
+          "description": "Skrivarens utskriftssensor."
+        },
+        "search": {
+          "name": "Sök",
+          "description": "Bara utskrifter med alla de här orden i namnet."
+        },
+        "limit": {
+          "name": "Gräns",
+          "description": "Högst så här många utskrifter."
+        }
+      }
+    }
+  }
+}

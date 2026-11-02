@@ -218,6 +218,74 @@ fn arc(a: (f64, f64), b: (f64, f64), ij: (f64, f64), clockwise: bool) -> Vec<(f6
 }
 
 /// Copy the plate's G-code out of the sliced 3MF (once) and index it.
+/// Purge (`; FLUSH_START` to `; FLUSH_END`) and prime tower (`; FEATURE: Prime
+/// tower`) in a plate's G-code, up to `max_layer` for a print that stopped.
+/// Grams per filament from the file's own density and diameter.
+pub fn waste(r: impl BufRead, max_layer: Option<i64>) -> (crate::models::PrintWaste, Vec<(i32, f64)>) {
+    let (mut dens, mut diam): (Vec<f64>, Vec<f64>) = (vec![], vec![]);
+    let (mut tool, mut in_flush, mut in_tower) = (None::<usize>, false, false);
+    let mut changes = 0;
+    let mut flush: std::collections::BTreeMap<usize, f64> = Default::default();
+    let mut tower: std::collections::BTreeMap<usize, f64> = Default::default();
+    let numbers = |v: &str| v.split(',').filter_map(|x| x.trim().parse().ok()).collect::<Vec<f64>>();
+    for line in r.lines().map_while(Result::ok) {
+        if let Some(rest) = line.strip_prefix("M73 L") {
+            if let (Some(max), Ok(layer)) = (max_layer, rest.trim().parse::<i64>())
+                && layer > max
+            {
+                break;
+            }
+            continue;
+        }
+        if let Some(c) = line.strip_prefix(';') {
+            let c = c.trim_start();
+            if let Some(v) = c.strip_prefix("filament_density:") {
+                dens = numbers(v);
+            } else if let Some(v) = c.strip_prefix("filament_diameter:") {
+                diam = numbers(v);
+            } else if c.starts_with("FLUSH_START") {
+                in_flush = true;
+            } else if c.starts_with("FLUSH_END") {
+                in_flush = false;
+            } else if let Some(f) = c.strip_prefix("FEATURE:") {
+                in_tower = f.trim() == "Prime tower";
+            }
+            continue;
+        }
+        // T only appears at a change (the first load is T1000); M620 S<n>A
+        // also stands in the start code.
+        let m620 = line.strip_prefix("M620 S").and_then(|v| v.trim_end().strip_suffix('A'));
+        if let Some(t) = line.strip_prefix('T').filter(|_| m620.is_none()).or(m620).and_then(|t| t.trim_end().parse::<usize>().ok()) {
+            if t < 255 {
+                changes += u32::from(m620.is_none());
+                tool = Some(t);
+            }
+            continue;
+        }
+        let (Some(t), true) = (tool, line.starts_with("G1 ") || line.starts_with("G2 ") || line.starts_with("G3 ")) else { continue };
+        let e = line.split(';').next().unwrap_or("").split_whitespace().find_map(|w| w.strip_prefix('E')).and_then(|e| e.parse::<f64>().ok()).unwrap_or(0.0);
+        if e > 0.0 && in_flush {
+            *flush.entry(t).or_default() += e;
+        } else if e > 0.0 && in_tower {
+            *tower.entry(t).or_default() += e;
+        }
+    }
+    let grams = |t: usize, mm: f64| {
+        let d = diam.get(t).copied().unwrap_or(1.75);
+        mm * std::f64::consts::PI * (d / 2.0).powi(2) * dens.get(t).copied().unwrap_or(1.24) / 1000.0
+    };
+    // + 0.0: a sum of nothing is -0.0.
+    let round = |g: f64| (g * 100.0).round() / 100.0 + 0.0;
+    let flush_g: f64 = flush.iter().map(|(t, mm)| grams(*t, *mm)).sum();
+    let tower_g: f64 = tower.iter().map(|(t, mm)| grams(*t, *mm)).sum();
+    let tools: std::collections::BTreeSet<usize> = flush.keys().chain(tower.keys()).copied().collect();
+    let per_tool = tools
+        .into_iter()
+        .map(|t| (t as i32, grams(t, flush.get(&t).copied().unwrap_or(0.0)) + grams(t, tower.get(&t).copied().unwrap_or(0.0))))
+        .collect();
+    (crate::models::PrintWaste { changes, flush_g: round(flush_g), tower_g: round(tower_g), cost: None }, per_tool)
+}
+
 pub fn load_index(sliced: &Path, entry: &str, dir: &Path, plate: u32) -> anyhow::Result<(PathBuf, Index)> {
     let meta = std::fs::metadata(sliced).with_context(|| format!("reading {}", sliced.display()))?;
     let stamp = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);

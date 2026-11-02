@@ -33,7 +33,8 @@ Paste or share a model link. AirSlice shows the model, you pick a print profile 
 - **Queue by printer type**: sliced prints wait in a queue for the printer model they were sliced for, so any free printer of that type can take the next one. Nothing starts on its own: someone confirms the plate is clear. A queued print can also be sliced again for another type.
 - **Follow prints**: progress, layer, temperatures, fans, AMS humidity, camera picture, error messages (HMS) in plain words with a link to Bambu's wiki, pause, resume, stop, speed and light.
 - **Notifications** when a model is sliced, a print starts, the first layer is down (with a picture, so a bad start can be stopped), a print ends, or a printer is free with prints waiting. Sent through Home Assistant, Telegram, ntfy or the browser itself, each with its own events and language.
-- **History**: every print with its time, filament and cost, a photo of the result, favourites, "Print again" and statistics.
+- **History**: every print with its time, filament and cost, a photo of the result, favourites, "Print again" and statistics. Prints started on the printer or from another app are kept too, marked as started outside AirSlice.
+- **Home Assistant integration** (optional): the print history as sensors, a service and media. See [Home Assistant integration](#home-assistant-integration).
 - **Power plug** (Home Assistant switch): turned on for a print to an offline printer, off again after a cool-down, with the energy each print used.
 - **Phone**: installable web app (Add to Home Screen), Android share target, iOS Shortcut for the share sheet, English and Swedish.
 - **API** with keys, for Home Assistant and scripts.
@@ -110,7 +111,7 @@ To build the image yourself: `git clone`, then `docker compose up -d --build` wi
 | `ADMIN_PASSWORD` | *(unset)* | Fixed admin password; otherwise set on the first visit |
 | `COOKIE_SECURE` | auto | Force the `Secure` cookie flag (`true`/`false`); auto uses `X-Forwarded-Proto` |
 | `SLICE_TIMEOUT_SECS` | `900` | Stop slicing after this long |
-| `MAX_JOBS` | `50` | Jobs kept in history |
+| `MAX_JOBS` | `50` | Jobs that never printed kept in history. Prints that ran are always kept, until you remove them |
 | `ORCA_SLICER_PATH` | `/opt/orcaslicer/AppRun` | OrcaSlicer binary |
 | `ORCA_PROFILES_DIR` | next to the binary | OrcaSlicer `resources/profiles` |
 | `RUST_LOG` | `info` | Log level (`debug` shows FTP and MQTT details) |
@@ -168,6 +169,8 @@ Create a key under **Settings → API keys** and send it as `X-API-Key: as_…` 
 | `POST` | `/jobs` | `{"url", "file_id"?}` → job (downloads in the background) |
 | `POST` | `/jobs/upload` | multipart field `file` → job |
 | `GET` | `/jobs`, `/jobs/{id}` | Jobs with state, log, slice result and suggested AMS mapping |
+| `GET` | `/prints` | Prints that ended, newest first, also those started outside AirSlice. `?printer_id=`, `?limit=` |
+| `POST` | `/prints/import` | A print from an older log; the same `key` twice does nothing |
 | `POST` | `/jobs/{id}/slice` | `{"printer_id"?, "plate"?, "settings"?: "auto"\|"project"\|"printer", "process_profile"?, "filament_profile"?, "tray_ids"?, "objects"?, "bed_type"?, "scale_percent"?, "copies"?, "rotate_z"?, "auto_orient"?}` |
 | `POST` | `/jobs/{id}/slice-all` | Same body plus `"plates"?: [1, 2]`; each plate becomes its own job, queued in order |
 | `POST` | `/jobs/{id}/print` | `{"ams_mapping"?: [..], "bed_leveling"?, "timelapse"?, "flow_cali"?}` |
@@ -192,6 +195,22 @@ curl -X POST https://print.home.example.com/api/print \
 It picks the linked profile (or one made for your printer), slices, maps filament and starts, or stops with an error instead of guessing when the loaded filament doesn't match. Poll `GET /api/jobs/{id}` until `state` is `started` or `failed`. Job states: `downloading → ready → slicing → sliced → (queued) → uploading → starting → started`, or `failed`.
 
 AMS mapping: one entry per filament slot in the project (`filament_slots`); the value is `ams_index * 4 + slot`, `254` for the external spool, `-1` for unused.
+
+## Home Assistant integration
+
+Optional, and separate from the add-on: it also works with AirSlice running in Docker.
+Copy `custom_components/airslice` to Home Assistant's `custom_components` (or add this
+repository to HACS as an integration), restart, and add **AirSlice** with its address
+and an API key from **Settings → API keys**.
+
+- `sensor.airslice_<printer>_prints`: how many prints the printer's history holds, with
+  totals and the latest print as attributes.
+- `airslice.list_prints` (`entity_id`, optional `search` and `limit`): the prints, newest
+  first, for cards and automations.
+- Photos of the results in the media browser, as `media-source://airslice/...`.
+
+AirSlice keeps the history; Home Assistant reads it and stores nothing itself. The
+integration needs an AirSlice with `GET /api/prints`.
 
 ## Development
 

@@ -194,7 +194,7 @@ export function HistoryView({ printers, openJob }: { printers: Printer[] | null;
   };
   usePoll(async () => {
     try {
-      setJobs(await api.get<Job[]>("jobs"));
+      setJobs(await api.get<Job[]>("jobs?limit=5000"));
     } catch {
       /* keep last list */
     }
@@ -272,7 +272,7 @@ export function HistoryView({ printers, openJob }: { printers: Printer[] | null;
           if (printer) bits.push(printer.name);
           if (j.slice?.prediction_secs) bits.push(fmtDuration(j.slice.prediction_secs));
           if (j.cost) bits.push(money(j.cost));
-          if (j.files_removed) bits.push(tr("files removed"));
+          if (j.files_removed && j.source !== "external") bits.push(tr("files removed"));
           bits.push(timeAgo(j.created_at));
           return (
             <SwipeRow key={j.id} enabled={removable(j)} onRemove={() => remove(j)}>
@@ -290,10 +290,11 @@ export function HistoryView({ printers, openJob }: { printers: Printer[] | null;
                 ) : j.photo ? (
                   <img src={`api/jobs/${j.id}/photo.jpg`} alt="" loading="lazy" />
                 ) : (
-                  <div className="thumb-ph">{j.file.kind.toUpperCase()}</div>
+                  <div className="thumb-ph">{j.source === "external" ? "↗" : j.file.kind.toUpperCase()}</div>
                 )}
                 <div className="history-text">
                   <div className="file-name ellipsis">{j.model_title}</div>
+                  {j.source === "external" && <span className="tag external">{tr("Started outside AirSlice")}</span>}
                   <div className="file-meta">{bits.join(", ")}</div>
                   {j.state === "failed" && j.error && (
                     <div className="faint ellipsis" style={{ color: "var(--err)" }}>

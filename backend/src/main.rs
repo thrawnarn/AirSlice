@@ -12,6 +12,7 @@ mod notify;
 mod power;
 mod jobs;
 mod preview;
+mod prints;
 mod models;
 mod printer;
 mod slicer;
