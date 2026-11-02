@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - History on a phone: swipe a job to the left to remove it, instead of to the right.
 - Prints started on the printer or from another app are followed too and kept in History, marked "Started outside AirSlice", with a photo of the result, notifications and the plug's auto-off. AirSlice doesn't know their filament, so their cost is print time only.
