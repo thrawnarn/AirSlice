@@ -161,3 +161,85 @@ function CollectionModels({ id, openModel }: { id: string; openModel: (url: stri
     </main>
   );
 }
+
+/** The same collections inside a dialog: pick a model instead of opening its page. */
+export function CollectionPicker({ disabled, onPick }: { disabled: boolean; onPick: (url: string) => void }) {
+  const [list, setList] = useState<Collection[] | null>(null);
+  const [open, setOpen] = useState<Collection | null>(null);
+  const [models, setModels] = useState<CollectionModel[]>([]);
+  const [more, setMore] = useState(false);
+  const [next, setNext] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    loadList().then(setList, (e) => setError((e as Error).message));
+  }, []);
+
+  async function load(c: Collection, offset: number) {
+    setBusy(true);
+    setError(null);
+    try {
+      const page = await api.get<{ total: number; models: CollectionModel[] }>(`makerworld/collections/${encodeURIComponent(c.id)}?offset=${offset}&limit=${PAGE}`);
+      setModels((m) => (offset === 0 ? page.models : [...m, ...page.models.filter((x) => !m.some((y) => y.id === x.id))]));
+      setNext(offset + PAGE);
+      setMore(page.models.length >= PAGE && offset + PAGE < page.total);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const name = (c: Collection) => (c.kind === "downloads" ? tr("Downloads") : c.title);
+
+  if (open) {
+    return (
+      <>
+        <button type="button" className="linkish settings-back" onClick={() => { setOpen(null); setModels([]); setError(null); }}>
+          {tr("‹ Collections")}
+        </button>
+        <h3 style={{ margin: "4px 0 10px" }}>{name(open)}</h3>
+        {error && <NotLinked message={error} />}
+        <ul className="model-grid">
+          {models.map((m) => (
+            <li key={m.id}>
+              <button type="button" className="model-card" disabled={disabled} onClick={() => onPick(m.url)}>
+                {m.cover ? <img src={remoteImg(m.cover)} alt="" loading="lazy" /> : <div className="thumb-ph" />}
+                <span className="model-card-title">{m.title}</span>
+                {m.author && <span className="faint small ellipsis">{m.author}</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+        {busy && <p className="faint">{tr("Loading…")}</p>}
+        {!busy && !error && models.length === 0 && <p className="faint">{tr("No models here.")}</p>}
+        {more && !busy && (
+          <button className="btn block" style={{ marginTop: 12 }} onClick={() => load(open, next)}>
+            {tr("Show more")}
+          </button>
+        )}
+      </>
+    );
+  }
+  return (
+    <>
+      {error && <NotLinked message={error} />}
+      {!list && !error && <p className="faint">{tr("Loading…")}</p>}
+      {list && list.length === 0 && <p className="faint">{tr("No collections on MakerWorld yet.")}</p>}
+      <ul className="collections">
+        {list?.map((c) => (
+          <li key={`${c.kind}-${c.id}`}>
+            <button type="button" className="collection-card" onClick={() => { setOpen(c); void load(c, 0); }}>
+              <div className={`collection-covers n${Math.min(4, c.covers.length)}`}>
+                {c.covers.length ? c.covers.slice(0, 4).map((u) => <img key={u} src={remoteImg(u)} alt="" loading="lazy" />) : <div className="thumb-ph" />}
+              </div>
+              <div className="collection-meta">
+                <span className="ellipsis collection-title">{name(c)}</span>
+                {c.count != null && <span className="faint small">{c.count === 1 ? tr("1 model") : tr("{0} models", [c.count.toLocaleString(locale)])}</span>}
+              </div>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}

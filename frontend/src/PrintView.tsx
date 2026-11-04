@@ -1,6 +1,7 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api, findModelLink } from "./api";
 import type { ConnectionSettings, FilamentInfo, Job, MeshTransform, NextPlateSuggestion, PlateInfo, SliceTweaks, Printer, ProfileChoices, QueueEntry, ResolvedModel, Spool as SpoolmanSpool, Suggestion, Tray, TrayFilament } from "./types";
+import { CollectionPicker } from "./CollectionsView";
 import { PrintControls } from "./PrintersView";
 import { TrayPicker, TraysSheet, loadedTrays, money, plateName, spoolLine, usePlates, usePrinterSpools } from "./Trays";
 import { TweakPicker, cleanTweaks, describeTweaks } from "./Tweaks";
@@ -428,7 +429,139 @@ function PrinterPicker({ printers, value, onChange }: { printers: Printer[]; val
 /** What's chosen for one added model. */
 type ExtraPick = { copies: number; tray: number; plate?: number };
 
-/** Other models to print on the same plate: add by link or file. */
+/** Jobs whose model can go on another plate, newest first, one per file. */
+function addableJobs(jobs: Job[], query: string): Job[] {
+  const seen = new Set<string>();
+  const q = query.trim().toLowerCase();
+  return jobs.filter((j) => {
+    if (j.source === "external" || (j.source === "upload" && (j.files_removed || !j.inspection))) return false;
+    if (q && !j.model_title.toLowerCase().includes(q)) return false;
+    const key = `${j.source}|${j.model_url}|${j.file.id}|${j.file.name}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** Choose a model to add: from a link or file, MakerWorld collections, or earlier jobs. */
+function AddModelSheet({ job, onAdded, onClose }: { job: Job; onAdded: (j: Job) => void; onClose: () => void }) {
+  const [tab, setTab] = useState<"link" | "collections" | "history">("link");
+  const [link, setLink] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [jobs, setJobs] = useState<Job[] | null>(null);
+  const [query, setQuery] = useState("");
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (tab !== "history" || jobs) return;
+    api.get<Job[]>("jobs?limit=5000").then(setJobs, (e) => setError((e as Error).message));
+  }, [tab, jobs]);
+
+  async function add(work: () => Promise<Job>) {
+    setBusy(true);
+    setError(null);
+    try {
+      onAdded(await work());
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  }
+  const addUrl = (url: string) => add(() => api.post<Job>(`jobs/${job.id}/extras`, { url }));
+  const addFile = (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    void add(() => api.upload<Job>(`jobs/${job.id}/extras/upload`, form));
+  };
+  const tabs: ["link" | "collections" | "history", string][] = [
+    ["link", tr("Link")],
+    ["collections", tr("Collections")],
+    ["history", tr("History")],
+  ];
+  const found = jobs ? addableJobs(jobs, query).slice(0, 100) : [];
+
+  return (
+    <Sheet title={tr("Add a model")} onClose={onClose}>
+      <div className="segmented" role="group" aria-label={tr("Add a model")} style={{ marginBottom: 14 }}>
+        {tabs.map(([id, label]) => (
+          <button key={id} type="button" aria-pressed={tab === id} onClick={() => setTab(id)}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {busy && <Notice>{tr("Adding the model. A large file can take a while…")}</Notice>}
+      {error && <Notice tone="err">{error}</Notice>}
+
+      {tab === "link" && (
+        <>
+          <form
+            className="row"
+            style={{ gap: 8 }}
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (link.trim()) void addUrl(link.trim());
+            }}
+          >
+            <input className="input grow" value={link} onChange={(e) => setLink(e.target.value)} placeholder={tr("Paste a model link")} aria-label={tr("Link to the model to add")} disabled={busy} autoFocus />
+            <button className="btn small" type="submit" disabled={busy || !link.trim()}>
+              {tr("Add")}
+            </button>
+          </form>
+          <p className="faint small" style={{ margin: "12px 0 0" }}>
+            {tr("Or from this device:")}{" "}
+            <button type="button" className="linkish" disabled={busy} onClick={() => fileInput.current?.click()}>
+              {tr("Choose file")}
+            </button>
+          </p>
+          <input
+            ref={fileInput}
+            type="file"
+            accept=".3mf,.stl,.obj,.step,.stp"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = "";
+              if (f) addFile(f);
+            }}
+          />
+        </>
+      )}
+
+      {tab === "collections" && <CollectionPicker disabled={busy} onPick={(url) => void addUrl(url)} />}
+
+      {tab === "history" && (
+        <>
+          <input className="input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={tr("Search earlier models")} aria-label={tr("Search earlier models")} style={{ width: "100%", marginBottom: 10 }} />
+          {!jobs && !error && <p className="faint">{tr("Loading…")}</p>}
+          {jobs && found.length === 0 && <p className="faint">{tr("No earlier models to add.")}</p>}
+          <ul className="files">
+            {found.map((j) => (
+              <li key={j.id}>
+                <button type="button" className="file" disabled={busy} onClick={() => void add(() => api.post<Job>(`jobs/${job.id}/extras/from-job`, { job_id: j.id }))}>
+                  {j.model_cover ? (
+                    <img src={remoteImg(j.model_cover)} alt="" loading="lazy" />
+                  ) : j.inspection?.plates.find((p) => p.has_thumbnail) ? (
+                    <img className="plate-cover" src={`api/jobs/${j.id}/plates/${j.inspection.plates.find((p) => p.has_thumbnail)!.index}/thumbnail`} alt="" loading="lazy" />
+                  ) : (
+                    <div className="thumb-ph">{j.file.kind.toUpperCase()}</div>
+                  )}
+                  <div className="history-text">
+                    <div className="file-name ellipsis">{j.model_title}</div>
+                    <div className="file-meta ellipsis">{j.file.name}</div>
+                  </div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </Sheet>
+  );
+}
+
+/** Other models to print on the same plate. */
 function PlateExtras({
   job,
   picks,
@@ -447,98 +580,69 @@ function PlateExtras({
   spools?: Record<string, SpoolmanSpool> | null;
 }) {
   const extras = job.extras ?? [];
-  const [link, setLink] = useState("");
+  const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const fileInput = useRef<HTMLInputElement>(null);
 
-  async function run(work: () => Promise<Job>) {
+  async function remove(id: string) {
     setBusy(true);
     setError(null);
     try {
-      onChange(await work());
-      setLink("");
+      onChange(await api.del<Job>(`jobs/${job.id}/extras/${id}`));
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
   }
-  const addFile = (file: File) => {
-    const form = new FormData();
-    form.append("file", file);
-    run(() => api.upload<Job>(`jobs/${job.id}/extras/upload`, form));
-  };
 
   return (
-    <>
-      <h2>{tr("More models on this plate")}</h2>
-      <div className="panel transform">
-        {extras.map((x) => {
-          const pick = picks[x.id] ?? { copies: 1, tray: -1 };
-          return (
-            <div key={x.id} className="extra">
-              <div className="row" style={{ gap: 10 }}>
-                {x.cover && <img className="extra-cover" src={remoteImg(x.cover)} alt="" loading="lazy" />}
-                <div className="grow ellipsis" style={{ fontWeight: 620 }}>{x.title}</div>
-                <button type="button" className="btn small" disabled={busy} onClick={() => run(() => api.del<Job>(`jobs/${job.id}/extras/${x.id}`))}>
-                  {tr("Remove")}
-                </button>
-              </div>
-              {x.multicolor && <p className="faint small" style={{ margin: "6px 0 0" }}>{tr("This model has several colours in its file. Added to this plate, it prints in one colour.")}</p>}
-              {x.plates.length > 1 && (
-                <label className="field" style={{ margin: "8px 0 0" }}>
-                  <span>{tr("Plate from this file")}</span>
-                  <select className="input" value={pick.plate ?? x.plates[0].index} onChange={(e) => onPick(x.id, { plate: Number(e.target.value) })}>
-                    {x.plates.map((p) => (
-                      <option key={p.index} value={p.index}>
-                        {p.name ?? tr("Plate {0}", [p.index])}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-              {trays.length > 0 && (
-                <div className="tf-row">
-                  <span className="tf-label">{tr("Print with")}</span>
-                  <TrayPicker title={tr("Print {0} with", [x.title])} trays={trays} value={pick.tray} onChange={(id) => onPick(x.id, { tray: id })} onManage={onManage} spools={spools} />
+    <div style={{ margin: "4px 0 14px" }}>
+      {extras.length > 0 && (
+        <div className="panel transform" style={{ marginBottom: 8 }}>
+          {extras.map((x) => {
+            const pick = picks[x.id] ?? { copies: 1, tray: -1 };
+            return (
+              <div key={x.id} className="extra">
+                <div className="row" style={{ gap: 10 }}>
+                  {x.cover && <img className="extra-cover" src={remoteImg(x.cover)} alt="" loading="lazy" />}
+                  <div className="grow ellipsis" style={{ fontWeight: 620 }}>{x.title}</div>
+                  <button type="button" className="btn small" disabled={busy} onClick={() => void remove(x.id)}>
+                    {tr("Remove")}
+                  </button>
                 </div>
-              )}
-              <CopiesStepper value={pick.copies} onChange={(n) => onPick(x.id, { copies: n })} />
-            </div>
-          );
-        })}
-        <form
-          className="row"
-          style={{ gap: 8, padding: "8px 0" }}
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (link.trim()) run(() => api.post<Job>(`jobs/${job.id}/extras`, { url: link.trim() }));
-          }}
-        >
-          <input className="input grow" value={link} onChange={(e) => setLink(e.target.value)} placeholder={tr("Paste a model link")} aria-label={tr("Link to the model to add")} disabled={busy} />
-          <button className="btn small" type="submit" disabled={busy || !link.trim()}>
-            {busy ? tr("Adding…") : tr("Add")}
-          </button>
-          <button className="btn small" type="button" disabled={busy} onClick={() => fileInput.current?.click()}>
-            {tr("Choose file")}
-          </button>
-          <input
-            ref={fileInput}
-            type="file"
-            accept=".3mf,.stl,.obj,.step,.stp"
-            hidden
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              e.target.value = "";
-              if (f) addFile(f);
-            }}
-          />
-        </form>
-        {extras.length > 0 && <p className="faint small" style={{ margin: "0 0 8px" }}>{tr("The slicer arranges everything on the plate. You'll see the result after slicing.")}</p>}
-        {error && <Notice tone="err">{error}</Notice>}
-      </div>
-    </>
+                {x.multicolor && <p className="faint small" style={{ margin: "6px 0 0" }}>{tr("This model has several colours in its file. Added to this plate, it prints in one colour.")}</p>}
+                {x.plates.length > 1 && (
+                  <label className="field" style={{ margin: "8px 0 0" }}>
+                    <span>{tr("Plate from this file")}</span>
+                    <select className="input" value={pick.plate ?? x.plates[0].index} onChange={(e) => onPick(x.id, { plate: Number(e.target.value) })}>
+                      {x.plates.map((p) => (
+                        <option key={p.index} value={p.index}>
+                          {p.name ?? tr("Plate {0}", [p.index])}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {trays.length > 0 && (
+                  <div className="tf-row">
+                    <span className="tf-label">{tr("Print with")}</span>
+                    <TrayPicker title={tr("Print {0} with", [x.title])} trays={trays} value={pick.tray} onChange={(id) => onPick(x.id, { tray: id })} onManage={onManage} spools={spools} />
+                  </div>
+                )}
+                <CopiesStepper value={pick.copies} onChange={(n) => onPick(x.id, { copies: n })} />
+              </div>
+            );
+          })}
+          <p className="faint small" style={{ margin: "8px 0" }}>{tr("The slicer arranges everything on the plate. You'll see the result after slicing.")}</p>
+        </div>
+      )}
+      {error && <Notice tone="err">{error}</Notice>}
+      <button type="button" className="btn block" onClick={() => setAdding(true)}>
+        {tr("More models on this plate")}
+      </button>
+      {adding && <AddModelSheet job={job} onAdded={onChange} onClose={() => setAdding(false)} />}
+    </div>
   );
 }
 

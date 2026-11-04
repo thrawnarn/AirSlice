@@ -599,6 +599,34 @@ where
     register_extra(state, id, extra).await
 }
 
+/// Add another job's model to this job's plate: its file when still there,
+/// else fetched again from its site.
+pub async fn add_extra_from_job(state: &Shared, id: &str, from: &str) -> anyhow::Result<Job> {
+    job_for_extras(state, id).await?;
+    let old = get_job(state, from).await.ok_or_else(|| anyhow!("that job is gone"))?;
+    if old.source == Source::External {
+        bail!("This print wasn't started from AirSlice, so AirSlice has no file for it.");
+    }
+    let path = old.input_file.as_ref().filter(|_| !old.files_removed).map(|f| job_dir(state, from).join(f));
+    let file_there = match &path {
+        Some(p) => tokio::fs::try_exists(p).await.unwrap_or(false),
+        None => false,
+    };
+    if !file_there {
+        if old.source == Source::Upload {
+            bail!("The file of “{}” is gone. Upload it again to add it.", old.model_title);
+        }
+        return add_extra(state, id, &old.model_url, Some(&old.file.id)).await;
+    }
+    let extra = new_extra(old.source, old.model_url.clone(), old.model_title.clone(), old.model_cover.clone(), &old.file);
+    let dir = job_dir(state, id).join("extras");
+    tokio::fs::create_dir_all(&dir).await?;
+    if let Some(p) = path {
+        tokio::fs::copy(p, dir.join(&extra.input_file)).await.context("copying the model")?;
+    }
+    register_extra(state, id, extra).await
+}
+
 pub async fn remove_extra(state: &Shared, id: &str, extra_id: &str) -> anyhow::Result<Job> {
     let job = get_job(state, id).await.ok_or_else(|| anyhow!("job not found"))?;
     if job.state.in_use() {

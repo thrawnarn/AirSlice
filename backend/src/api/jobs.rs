@@ -684,6 +684,16 @@ pub async fn add_extra(State(state): State<Shared>, Path(id): Path<String>, Json
     Ok(Json(view(&state, job).await))
 }
 
+#[derive(Deserialize)]
+pub struct ExtraFromJob {
+    job_id: String,
+}
+
+pub async fn add_extra_from_job(State(state): State<Shared>, Path(id): Path<String>, Json(body): Json<ExtraFromJob>) -> ApiResult<Json<JobView>> {
+    let job = jobs::add_extra_from_job(&state, &id, &body.job_id).await.map_err(bad)?;
+    Ok(Json(view(&state, job).await))
+}
+
 pub async fn upload_extra(State(state): State<Shared>, Path(id): Path<String>, mut multipart: axum::extract::Multipart) -> ApiResult<Json<JobView>> {
     while let Some(field) = multipart.next_field().await.map_err(|e| AppError::bad_request(e.to_string()))? {
         if field.name() != Some("file") {

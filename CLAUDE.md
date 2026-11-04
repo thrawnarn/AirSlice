@@ -227,7 +227,8 @@ screenshots).
   CSP (`connect-src 'self'`), so fetching a Printables/Thingiverse picture there fails
   and the cached page came back instead (broken covers in the installed app).
 - More models on a plate (`Job::extras`, files in the job's `extras/`, `SliceOptions::extras`,
-  `POST jobs/{id}/extras`, `…/extras/upload`, `DELETE …/extras/{extra}`, `slicer.rs`
+  `POST jobs/{id}/extras`, `…/extras/upload`, `…/extras/from-job`, `DELETE …/extras/{extra}`,
+  `AddModelSheet` in PrintView.tsx, `CollectionPicker`, `slicer.rs`
   `extra_meshes`/`combine`; checked on OrcaSlicer 2.4.2, 2026-11-04). Orca takes one 3MF
   plus any meshes, 3MF first; two 3MFs exit -4. So an added model always becomes meshes
   (`--export-stl`, files `stl/obj_<n>_…`, n = place in the 3dmodel's `<item>` order, which
