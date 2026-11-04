@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- MakerWorld downloads work again. MakerWorld stopped sending a download link through the route AirSlice used, which showed up as "couldn't reach the file host".
+- A missing or unusable download link now says so, instead of blaming the network.
+
 ## 0.2.0
 
 - History on a phone: swipe a job to the left to remove it, instead of to the right.
