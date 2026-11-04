@@ -435,6 +435,10 @@ fieldset.field { border: 0; padding: 0; margin: 0 0 14px; min-width: 0; }
 .field > small { display: block; color: var(--ink-3); font-size: 13px; margin-top: 4px; }
 .check-list { display: grid; gap: 2px; }
 
+.extra { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.extra .tf-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.extra .tf-label { white-space: nowrap; }
+.extra-cover { width: 40px; height: 40px; border-radius: var(--radius-s, 6px); object-fit: cover; flex: none; }
 .objects-pick { margin: 4px 0 14px; padding: 10px 14px; border-radius: var(--radius-m); background: var(--panel); }
 .objects-pick summary { cursor: pointer; font-weight: 620; }
 .objects-pick .check { padding: 6px 0; }

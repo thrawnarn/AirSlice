@@ -226,6 +226,23 @@ screenshots).
 - The service worker must leave cross-origin requests alone: it runs under the page's
   CSP (`connect-src 'self'`), so fetching a Printables/Thingiverse picture there fails
   and the cached page came back instead (broken covers in the installed app).
+- More models on a plate (`Job::extras`, files in the job's `extras/`, `SliceOptions::extras`,
+  `POST jobs/{id}/extras`, `…/extras/upload`, `DELETE …/extras/{extra}`, `slicer.rs`
+  `extra_meshes`/`combine`; checked on OrcaSlicer 2.4.2, 2026-11-04). Orca takes one 3MF
+  plus any meshes, 3MF first; two 3MFs exit -4. So an added model always becomes meshes
+  (`--export-stl`, files `stl/obj_<n>_…`, n = place in the 3dmodel's `<item>` order, which
+  picks the plate's objects; loses colours and project settings; `--orient 1` only for bare meshes).
+  Mesh base: `--load-filament-ids 1,2,…` gives each input a filament. It's refused with a 3MF (-2).
+  Project base: `threemf::single_plate` (only the chosen plate, as plate 1: `--arrange`
+  gathers all plates onto one, and a later plate gives no G-code; the others must lose
+  `<item>`, `<object>` and `assemble_item`, or loading fails -6) and `pad_filaments`
+  (extra `--load-filaments` segfault or abort with "invalid size" otherwise; list lengths can't
+  tell per-filament keys when a project has 1–2 filaments, hence `filament_keys.rs`) →
+  `--export-3mf --arrange 1` without filaments (they segfault here) → `set_object_slots`
+  edits `extruder` by object name (`airslice-e<extra>_…`) → `--slice 1`. `--repetitions` fails
+  on an export without slicing, so a project base has no copies with extras. Overflow: Orca
+  either moves objects to another plate (`check_all_placed` counts) or stops with "unprintable
+  area". The output has one plate: `slice.plate` is 1, `options.plate` is the file's plate.
 - Leaving objects out of a plate: remove only the plate's `<model_instance>` entries in
   model_settings.config (`threemf::keep_plate_objects`). Removing the `<item>` from the
   3dmodel build makes OrcaSlicer fail to load the file (-6). Copies + arrange keep the

@@ -1,5 +1,16 @@
 // Swedish. Keys are the English text (see i18n.ts); missing keys show in English.
 export const sv: Record<string, string> = {
+  "More models on this plate": "Fler modeller på den här plattan",
+  "This model has several colours in its file. Added to this plate, it prints in one colour.": "Den här modellen har flera färger i sin fil. Tillagd på den här plattan skrivs den ut i en färg.",
+  "Plate from this file": "Platta från den här filen",
+  "Print {0} with": "Skriv ut {0} med",
+  "Paste a model link": "Klistra in en modellänk",
+  "Link to the model to add": "Länk till modellen som ska läggas till",
+  "Adding…": "Lägger till…",
+  "Choose file": "Välj fil",
+  "The slicer arranges everything on the plate. You'll see the result after slicing.": "Slicern placerar allt på plattan. Du ser resultatet efter slicningen.",
+  "Shows this model only. With added models, the slicer lays out the whole plate again.": "Visar bara den här modellen. Med tillagda modeller lägger slicern upp hela plattan på nytt.",
+  "This file is already sliced. It will be sliced again together with the added models.": "Filen är redan slicad. Den slicas om tillsammans med de tillagda modellerna.",
   " (+{0} stopped)": " (+{0} stoppade)",
   " (fast)": " (snabb)",
   " (fine)": " (fin)",

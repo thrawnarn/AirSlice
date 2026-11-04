@@ -352,6 +352,31 @@ pub struct SliceRequest<'a> {
     pub rotate_z: Option<f64>,
     /// Total copies on the plate.
     pub copies: u32,
+    /// Other models to arrange on the plate with this one.
+    pub extras: &'a [SliceExtra],
+}
+
+/// A model added to the plate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SliceExtra {
+    pub path: PathBuf,
+    /// A project's plate to take the objects from.
+    pub plate: u32,
+    pub copies: u32,
+    /// Filament slot (1-based) to print it with.
+    pub slot: u32,
+    /// Project files keep their orientation; a bare mesh is laid flat.
+    pub orient: bool,
+}
+
+/// Files of added models are named this, so they can be told apart in the
+/// combined project.
+fn extra_file_name(extra: usize, part: usize) -> String {
+    format!("airslice-e{extra}_{part}.stl")
+}
+
+fn extra_of_file(name: &str) -> Option<usize> {
+    name.strip_prefix("airslice-e")?.split('_').next()?.parse().ok()
 }
 
 /// One filament to slice with.
@@ -369,6 +394,10 @@ pub struct SliceOutput {
     pub adjusted: Vec<String>,
     /// Other things AirSlice changed to make the slice work, for the job log.
     pub notes: Vec<String>,
+    /// The plate in the output, when it isn't the one asked for.
+    pub plate: Option<u32>,
+    /// Objects of added models that should be on the plate.
+    pub extra_objects: u32,
 }
 
 pub struct Slicer {
@@ -423,7 +452,8 @@ impl Slicer {
         let mut notes = Vec::new();
 
         // Profiles, written next to the job.
-        let mut profile_args: Vec<String> = Vec::new();
+        let mut settings_args: Vec<String> = Vec::new();
+        let mut filament_args: Vec<String> = Vec::new();
         let mut process_path = None;
         let index = if req.machine.is_some() || !req.filaments.is_empty() { Some(self.profiles().await?) } else { None };
         if let Some(index) = &index {
@@ -440,7 +470,7 @@ impl Slicer {
                     settings.push_str(&ppath.to_string_lossy());
                     process_path = Some(ppath);
                 }
-                profile_args.extend(["--load-settings".into(), settings]);
+                settings_args.extend(["--load-settings".into(), settings]);
             }
             if !req.filaments.is_empty() {
                 let mut paths = Vec::new();
@@ -449,7 +479,7 @@ impl Slicer {
                     index.write_filament(&f.profile, f.color.as_deref(), &fpath)?;
                     paths.push(fpath.to_string_lossy().into_owned());
                 }
-                profile_args.extend(["--load-filaments".into(), paths.join(";")]);
+                filament_args.extend(["--load-filaments".into(), paths.join(";")]);
             }
         }
 
@@ -505,11 +535,47 @@ impl Slicer {
             }
         }
 
-        // OrcaSlicer only repeats projects (--repetitions fails on a bare
-        // mesh), so make the mesh a project first, with its size and turn.
+        let profile_args: Vec<String> = settings_args.iter().chain(&filament_args).cloned().collect();
         let mesh = !is_3mf(req.input);
         let mut transform = Transform::of(&req);
-        if mesh && req.copies > 1 {
+        let mut plate = req.plate;
+        let mut inputs: Vec<String> = Vec::new();
+        let mut id_args: Vec<String> = Vec::new();
+        let mut extra_objects = 0;
+        if !req.extras.is_empty() {
+            let meshes = self.extra_meshes(&req, &settings_args).await?;
+            extra_objects = meshes.iter().map(|m| m.copies).sum();
+            let work = req.work_dir.join("extras-work");
+            if mesh {
+                // Meshes take a filament each on OrcaSlicer's command line.
+                let base = self.export_stl(&input, &work.join("base"), req.work_dir, &settings_args, &Transform { copies: 1, arrange: false, ..transform }.shape_args()).await?;
+                let mut ids = Vec::new();
+                for _ in 0..req.copies.max(1) {
+                    for (_, path) in &base {
+                        inputs.push(path.to_string_lossy().into_owned());
+                        ids.push(1);
+                    }
+                }
+                for m in &meshes {
+                    for _ in 0..m.copies {
+                        inputs.push(m.path.to_string_lossy().into_owned());
+                        ids.push(m.slot);
+                    }
+                }
+                if ids.iter().any(|s| *s != 1) {
+                    id_args = vec!["--load-filament-ids".into(), ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",")];
+                }
+                transform = Transform { arrange: true, ..Transform::default() };
+            } else {
+                input = self.combine(&req, &input, &meshes, &settings_args, &work).await?;
+                transform = Transform::default();
+            }
+            plate = 1;
+        }
+
+        // OrcaSlicer only repeats projects (--repetitions fails on a bare
+        // mesh), so make the mesh a project first, with its size and turn.
+        if mesh && req.copies > 1 && req.extras.is_empty() {
             let prep = req.work_dir.join("mesh");
             reset_dir(&prep).await?;
             let mut args = vec!["--export-3mf".to_string(), "mesh.3mf".into()];
@@ -529,12 +595,17 @@ impl Slicer {
             transform = Transform { copies: req.copies, arrange: true, ..Transform::default() };
         }
 
-        let mut args: Vec<String> = vec!["--slice".into(), req.plate.to_string()];
+        let mut args: Vec<String> = vec!["--slice".into(), plate.to_string()];
         args.extend(["--export-3mf".into(), "sliced.3mf".into()]);
         args.extend(transform.args());
         args.extend(profile_args);
+        args.extend(id_args);
         args.extend(["--allow-newer-file".into(), "--outputdir".into(), out_dir.to_string_lossy().into_owned()]);
-        args.push(input.to_string_lossy().into_owned());
+        if inputs.is_empty() {
+            args.push(input.to_string_lossy().into_owned());
+        } else {
+            args.extend(inputs);
+        }
 
         let mut run = self.run(&args, req.work_dir, &out_dir, req.progress).await?;
         // Projects from Bambu Studio can carry values OrcaSlicer's range
@@ -557,7 +628,18 @@ impl Slicer {
 
         let Run { status, text, log_tail, error, output } = run;
         match (status.success(), output, error) {
-            (true, Some(output), None) => Ok(SliceOutput { output, log_tail, adjusted, notes }),
+            (true, Some(output), None) => Ok(SliceOutput {
+                output,
+                log_tail,
+                adjusted,
+                notes,
+                plate: (!req.extras.is_empty()).then_some(plate),
+                extra_objects,
+            }),
+            // With everything arranged by OrcaSlicer, this means the plate overflowed.
+            (_, _, Some(err)) if !req.extras.is_empty() && err.contains("unprintable area") => {
+                bail!("The models don't all fit on the plate. Remove a model or lower the copies, and slice again.")
+            }
             (_, _, Some(_)) if refused_filament(&text).is_some() => {
                 bail!("{} Choose another build plate.", refused_filament(&text).unwrap_or_default())
             }
@@ -569,6 +651,116 @@ impl Slicer {
             ),
             (false, Some(_), None) => bail!("OrcaSlicer exited with {status}"),
         }
+    }
+
+    /// One STL per object of the file (`obj_<number>_…`), by number.
+    async fn export_stl(&self, input: &Path, dir: &Path, work_dir: &Path, settings: &[String], shape: &[String]) -> anyhow::Result<Vec<(usize, PathBuf)>> {
+        reset_dir(dir).await?;
+        let mut args = vec!["--export-stl".to_string()];
+        args.extend(shape.iter().cloned());
+        args.extend(settings.iter().cloned());
+        args.extend(["--allow-newer-file".into(), "--outputdir".into(), dir.to_string_lossy().into_owned()]);
+        args.push(input.to_string_lossy().into_owned());
+        let run = self.run(&args, work_dir, dir, None).await?;
+        let mut files = Vec::new();
+        if let Ok(mut list) = tokio::fs::read_dir(dir.join("stl")).await {
+            while let Some(f) = list.next_entry().await? {
+                let name = f.file_name().to_string_lossy().into_owned();
+                if let Some(n) = stl_number(&name) {
+                    files.push((n, f.path()));
+                }
+            }
+        }
+        files.sort();
+        if !run.status.success() || run.error.is_some() || files.is_empty() {
+            bail!("{}", run.error.or_else(|| run.log_tail.last().cloned()).unwrap_or_else(|| format!("OrcaSlicer exited with {}", run.status)));
+        }
+        Ok(files)
+    }
+
+    /// The added models as meshes. A project becomes its plate's objects, which
+    /// leaves its colours and settings behind.
+    async fn extra_meshes(&self, req: &SliceRequest<'_>, settings: &[String]) -> anyhow::Result<Vec<ExtraMesh>> {
+        let work = req.work_dir.join("extras-work");
+        reset_dir(&work).await?;
+        let mut out = Vec::new();
+        for (i, extra) in req.extras.iter().enumerate() {
+            let name = extra.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let shape: Vec<String> = if extra.orient { vec!["--orient".into(), "1".into()] } else { Vec::new() };
+            let files = self
+                .export_stl(&extra.path, &work.join(format!("export-{i}")), req.work_dir, settings, &shape)
+                .await
+                .with_context(|| format!("OrcaSlicer couldn't read the added model {name}"))?;
+            let numbers = is_3mf(&extra.path)
+                .then(|| crate::threemf::plate_object_numbers(&extra.path, extra.plate))
+                .flatten();
+            for (n, path) in files {
+                if numbers.as_ref().is_some_and(|keep| !keep.contains(&n)) {
+                    continue;
+                }
+                let named = work.join(extra_file_name(i, n));
+                tokio::fs::rename(&path, &named).await?;
+                out.push(ExtraMesh { path: named, copies: extra.copies.max(1), slot: extra.slot });
+            }
+        }
+        if out.is_empty() {
+            bail!("The added models have nothing to print on the chosen plate.");
+        }
+        Ok(out)
+    }
+
+    /// One plate's project with the added meshes arranged on it, each object
+    /// on its filament.
+    async fn combine(&self, req: &SliceRequest<'_>, input: &Path, meshes: &[ExtraMesh], settings: &[String], work: &Path) -> anyhow::Result<PathBuf> {
+        let slots = crate::threemf::filament_count(input).unwrap_or(0);
+        let extra_slots = req.filaments.len().saturating_sub(slots);
+        let prepared = work.join("base.3mf");
+        let (src, dest, plate) = (input.to_path_buf(), prepared.clone(), req.plate);
+        tokio::task::spawn_blocking(move || crate::threemf::single_plate(&src, &dest, plate, extra_slots)).await??;
+
+        let dir = work.join("combined");
+        let mut project = prepared;
+        let mut output = None;
+        // Project settings OrcaSlicer refuses stop it here as well as when slicing.
+        for attempt in 0..2 {
+            reset_dir(&dir).await?;
+            let mut args = vec!["--export-3mf".to_string(), "combined.3mf".into(), "--arrange".into(), "1".into()];
+            args.extend(settings.iter().cloned());
+            args.extend(["--allow-newer-file".into(), "--outputdir".into(), dir.to_string_lossy().into_owned()]);
+            args.push(project.to_string_lossy().into_owned());
+            for m in meshes {
+                for _ in 0..m.copies {
+                    args.push(m.path.to_string_lossy().into_owned());
+                }
+            }
+            let run = self.run(&args, req.work_dir, &dir, None).await?;
+            let keys = crate::threemf::rejected_settings(&run.text);
+            if run.error.is_some() && attempt == 0 && !keys.is_empty() {
+                let fixed = work.join("base-orca.3mf");
+                let (src, dest) = (project.clone(), fixed.clone());
+                tokio::task::spawn_blocking(move || crate::threemf::edit_settings(&src, &dest, &keys, &[])).await??;
+                project = fixed;
+                continue;
+            }
+            let file = dir.join("combined.3mf");
+            if !run.status.success() || run.error.is_some() || !file.exists() {
+                bail!(
+                    "OrcaSlicer couldn't put the models together: {}",
+                    run.error.or_else(|| run.log_tail.last().cloned()).unwrap_or_else(|| format!("it exited with {}", run.status))
+                );
+            }
+            output = Some(file);
+            break;
+        }
+        let combined = output.ok_or_else(|| anyhow!("OrcaSlicer couldn't put the models together"))?;
+        let edited = work.join("combined-slots.3mf");
+        let slot_by_extra: Vec<u32> = req.extras.iter().map(|e| e.slot).collect();
+        let dest = edited.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::threemf::set_object_slots(&combined, &dest, |name| extra_of_file(name).and_then(|i| slot_by_extra.get(i).copied()))
+        })
+        .await??;
+        Ok(edited)
     }
 
     async fn run(
@@ -675,6 +867,18 @@ fn result_error(result: &Value) -> Option<String> {
     (code != 0).then(|| if msg.is_empty() { format!("return code {code}") } else { msg.to_string() })
 }
 
+/// An added model's object as a mesh file.
+struct ExtraMesh {
+    path: PathBuf,
+    copies: u32,
+    slot: u32,
+}
+
+/// The number in `obj_12_name.stl`.
+fn stl_number(name: &str) -> Option<usize> {
+    name.strip_prefix("obj_")?.split('_').next()?.parse().ok()
+}
+
 /// One OrcaSlicer run.
 struct Run {
     status: std::process::ExitStatus,
@@ -697,6 +901,15 @@ struct Transform {
 impl Transform {
     fn of(req: &SliceRequest<'_>) -> Self {
         Self { scale: req.scale, rotate_z: req.rotate_z, copies: req.copies, arrange: req.arrange, orient: req.orient }
+    }
+
+    /// Size and turn only, to make a mesh ready to go with other models.
+    fn shape_args(&self) -> Vec<String> {
+        let mut args = Transform { copies: 1, arrange: false, ..*self }.args();
+        if self.orient {
+            args.extend(["--orient".to_string(), "1".to_string()]);
+        }
+        args
     }
 
     /// OrcaSlicer applies transforms in the order given: scale and rotate the
@@ -823,6 +1036,14 @@ mod tests {
     }
 
     #[test]
+    fn extra_files_keep_their_model() {
+        assert_eq!(extra_of_file(&extra_file_name(3, 12)), Some(3));
+        assert_eq!(extra_of_file("t-rex2.stl"), None);
+        assert_eq!(stl_number("obj_12_t-rex2.stl"), Some(12));
+        assert_eq!(stl_number("notes.txt"), None);
+    }
+
+    #[test]
     fn transform_arguments() {
         let base = SliceRequest {
             input: Path::new("in.stl"),
@@ -840,6 +1061,7 @@ mod tests {
             scale: Some(1.5),
             rotate_z: Some(90.0),
             copies: 3,
+            extras: &[],
         };
         assert_eq!(
             Transform::of(&base).args().join(" "),

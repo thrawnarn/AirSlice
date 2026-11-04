@@ -3,11 +3,11 @@
 use crate::{
     models::{
         PrintOutcome,
-        FilamentInfo, Inspection, Job, JobState, MeshTransform, ModelFile, PlateInfo, PrintOptions, PrintStart, Printer, QueueItem,
+        ExtraChoice, FilamentInfo, Inspection, Job, JobState, MeshTransform, ModelFile, PlateExtra, PlateInfo, PrintOptions, PrintStart, Printer, QueueItem,
         ResolvedModel, SliceOptions, SliceOutcome, Source, now,
     },
     printer::{ftp, mapping},
-    slicer::{SliceFilament, SliceRequest},
+    slicer::{SliceExtra, SliceFilament, SliceRequest},
     sources::{self, makerworld, printables},
     state::Shared,
     threemf,
@@ -376,6 +376,7 @@ pub(crate) fn new_job(source: Source, url: String, model_id: String, title: Stri
         auto_print: None,
         input_file: None,
         output_file: None,
+        extras: vec![],
         favorite: false,
         copied_from: None,
         plate_label: None,
@@ -404,13 +405,34 @@ fn input_name(file_name: &str, kind: &str) -> String {
 }
 
 /// Accept a file uploaded from the browser (any site, or your own model).
-pub async fn create_upload<S, E>(state: &Shared, file_name: &str, mut chunks: S) -> anyhow::Result<Job>
+pub async fn create_upload<S, E>(state: &Shared, file_name: &str, chunks: S) -> anyhow::Result<Job>
 where
     S: futures::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
     E: std::fmt::Display,
 {
-    use futures::StreamExt;
-    use tokio::io::AsyncWriteExt;
+    let (title, file) = uploaded_file(file_name)?;
+    let mut job = new_job(Source::Upload, String::new(), String::new(), title, None, file.clone());
+    job.push_log(format!("Receiving {file_name}"));
+    let dir = job_dir(state, &job.id);
+    tokio::fs::create_dir_all(&dir).await?;
+    let name = input_name(file_name, &file.kind);
+    let size = match save_upload(chunks, &dir.join(&name)).await {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+            return Err(e);
+        }
+    };
+    insert_job(state, &job).await?;
+    log(state, &job.id, format!("Received {:.1} MB", size as f64 / 1_048_576.0)).await;
+    if let Err(e) = finish_input(state, &job.id, name).await {
+        fail(state, &job.id, &e).await;
+    }
+    get_job(state, &job.id).await.ok_or_else(|| anyhow!("job vanished"))
+}
+
+/// The title and file entry of an upload, if we can slice that kind of file.
+fn uploaded_file(file_name: &str) -> anyhow::Result<(String, ModelFile)> {
     let ext = sources::extension(file_name);
     if !sources::SLICEABLE.contains(&ext.as_str()) && ext != "gcode.3mf" {
         bail!("upload a 3MF, STL, OBJ or STEP file");
@@ -420,7 +442,7 @@ where
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| file_name.to_string());
     let title = title.trim_end_matches(".gcode.3mf").trim_end_matches(&format!(".{ext}")).to_string();
-    let file = ModelFile {
+    Ok((title, ModelFile {
         id: "upload".into(),
         name: file_name.to_string(),
         kind: if ext == "gcode.3mf" { "3mf".into() } else { ext.clone() },
@@ -435,32 +457,29 @@ where
         folder: None,
         prediction_secs: None,
         weight_g: None,
-    };
-    let mut job = new_job(Source::Upload, String::new(), String::new(), title, None, file.clone());
-    job.push_log(format!("Receiving {file_name}"));
-    let dir = job_dir(state, &job.id);
-    tokio::fs::create_dir_all(&dir).await?;
-    let name = input_name(file_name, &file.kind);
-    let dest = dir.join(&name);
-    let mut out = tokio::fs::File::create(&dest).await?;
+    }))
+}
+
+/// Write an uploaded stream to disk with the size cap. Returns the bytes written.
+async fn save_upload<S, E>(mut chunks: S, dest: &std::path::Path) -> anyhow::Result<u64>
+where
+    S: futures::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
+    E: std::fmt::Display,
+{
+    use futures::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let mut out = tokio::fs::File::create(dest).await?;
     let mut size = 0u64;
     while let Some(chunk) = chunks.next().await {
         let chunk = chunk.map_err(|e| anyhow!("upload interrupted: {e}"))?;
         size += chunk.len() as u64;
         if size > sources::MAX_DOWNLOAD {
-            let _ = tokio::fs::remove_dir_all(&dir).await;
             bail!("file is too large");
         }
         out.write_all(&chunk).await?;
     }
     out.flush().await?;
-    drop(out);
-    insert_job(state, &job).await?;
-    log(state, &job.id, format!("Received {:.1} MB", size as f64 / 1_048_576.0)).await;
-    if let Err(e) = finish_input(state, &job.id, name).await {
-        fail(state, &job.id, &e).await;
-    }
-    get_job(state, &job.id).await.ok_or_else(|| anyhow!("job vanished"))
+    Ok(size)
 }
 
 async fn download(state: &Shared, id: &str, model: &ResolvedModel, file: &ModelFile) -> anyhow::Result<()> {
@@ -468,26 +487,167 @@ async fn download(state: &Shared, id: &str, model: &ResolvedModel, file: &ModelF
     tokio::fs::create_dir_all(&dir).await?;
     let name = input_name(&file.name, &file.kind);
     let dest = dir.join(&name);
+    let size = fetch_file(state, model, file, &dest).await?;
+    log(state, id, format!("Downloaded {:.1} MB", size as f64 / 1_048_576.0)).await;
+    finish_input(state, id, name).await
+}
 
-    let size = match model.source {
+/// Download a model's file from its site. Returns the bytes written.
+async fn fetch_file(state: &Shared, model: &ResolvedModel, file: &ModelFile, dest: &std::path::Path) -> anyhow::Result<u64> {
+    Ok(match model.source {
         Source::Makerworld => {
             let token = state.store.read(|d| d.bambu.token.clone()).await.ok_or_else(|| anyhow!("Bambu account not linked"))?;
             let internal = model.internal_id.as_deref().ok_or_else(|| anyhow!("MakerWorld did not return the model id"))?;
             let china = model.url.contains(".cn/");
-            makerworld::download(&state.http, china, &model.model_id, internal, &file.id, &token, &dest).await?.0
+            makerworld::download(&state.http, china, &model.model_id, internal, &file.id, &token, dest).await?.0
         }
         Source::Printables => {
             let url = printables::download_url(&state.http, &model.model_id, file).await?;
-            sources::download_to(&state.http, &url, &dest).await?
+            sources::download_to(&state.http, &url, dest).await?
         }
         Source::Thingiverse => {
             let token = thingiverse_token(state).await?;
-            sources::thingiverse::download(&state.http, &token, &file.id, &dest).await?
+            sources::thingiverse::download(&state.http, &token, &file.id, dest).await?
         }
         Source::Upload | Source::External => bail!("uploads are not downloaded"),
+    })
+}
+
+// ------------------------------------------------------------------ models added to the plate
+
+const MAX_EXTRAS: usize = 10;
+const MAX_EXTRA_COPIES: u32 = 50;
+
+/// The job, if models can be added to or removed from its plate now.
+async fn job_for_extras(state: &Shared, id: &str) -> anyhow::Result<Job> {
+    let job = get_job(state, id).await.ok_or_else(|| anyhow!("job not found"))?;
+    if job.state.in_use() {
+        bail!("{}", busy_text(job.state));
+    }
+    if job.files_removed {
+        bail!("{FILES_REMOVED}");
+    }
+    if job.extras.len() >= MAX_EXTRAS {
+        bail!("A plate can take {MAX_EXTRAS} added models. Remove one to add another.");
+    }
+    Ok(job)
+}
+
+/// Look at a file now in the job's `extras/` folder and add it to the job.
+async fn register_extra(state: &Shared, id: &str, mut extra: PlateExtra) -> anyhow::Result<Job> {
+    let path = job_dir(state, id).join("extras").join(&extra.input_file);
+    let looked_at = path.clone();
+    let inspection = match tokio::task::spawn_blocking(move || threemf::inspect(&looked_at)).await? {
+        Ok(i) => i,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err(e.context("That file can't be read"));
+        }
     };
-    log(state, id, format!("Downloaded {:.1} MB", size as f64 / 1_048_576.0)).await;
-    finish_input(state, id, name).await
+    extra.kind = inspection.kind.clone();
+    extra.multicolor = inspection.filaments.len() > 1;
+    extra.plates = inspection.plates;
+    update_job(state, id, |j| {
+        j.push_log(format!("Added “{}” to the plate", extra.title));
+        j.extras.push(extra);
+    })
+    .await
+}
+
+fn new_extra(source: Source, url: String, title: String, cover: Option<String>, file: &ModelFile) -> PlateExtra {
+    let id = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+    let input_file = input_name(&file.name, &file.kind).replacen("input", &id, 1);
+    PlateExtra { id, title, source, model_url: url, cover, input_file, kind: String::new(), plates: vec![], multicolor: false }
+}
+
+/// Add a model from a link to the job's plate. Done when this returns.
+pub async fn add_extra(state: &Shared, id: &str, url: &str, file_id: Option<&str>) -> anyhow::Result<Job> {
+    job_for_extras(state, id).await?;
+    let model = resolve(state, url).await?;
+    let file = match file_id {
+        Some(f) => model.files.iter().find(|x| x.id == f),
+        None => sources::auto_pick(&model, None),
+    }
+    .cloned()
+    .ok_or_else(|| anyhow!(model.notes.first().cloned().unwrap_or_else(|| "no printable files found".into())))?;
+    if model.source == Source::Makerworld && state.store.read(|d| d.bambu.token.is_none()).await {
+        bail!("Link your Bambu account under Settings → Model sites to download from MakerWorld.");
+    }
+    let extra = new_extra(model.source, model.url.clone(), model.title.clone(), model.cover.clone(), &file);
+    let dir = job_dir(state, id).join("extras");
+    tokio::fs::create_dir_all(&dir).await?;
+    fetch_file(state, &model, &file, &dir.join(&extra.input_file)).await?;
+    register_extra(state, id, extra).await
+}
+
+/// Add a file uploaded from the browser to the job's plate.
+pub async fn add_extra_upload<S, E>(state: &Shared, id: &str, file_name: &str, chunks: S) -> anyhow::Result<Job>
+where
+    S: futures::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
+    E: std::fmt::Display,
+{
+    job_for_extras(state, id).await?;
+    let (title, file) = uploaded_file(file_name)?;
+    let extra = new_extra(Source::Upload, String::new(), title, None, &file);
+    let dir = job_dir(state, id).join("extras");
+    tokio::fs::create_dir_all(&dir).await?;
+    let dest = dir.join(&extra.input_file);
+    if let Err(e) = save_upload(chunks, &dest).await {
+        let _ = tokio::fs::remove_file(&dest).await;
+        return Err(e);
+    }
+    register_extra(state, id, extra).await
+}
+
+pub async fn remove_extra(state: &Shared, id: &str, extra_id: &str) -> anyhow::Result<Job> {
+    let job = get_job(state, id).await.ok_or_else(|| anyhow!("job not found"))?;
+    if job.state.in_use() {
+        bail!("{}", busy_text(job.state));
+    }
+    let extra = job.extras.iter().find(|e| e.id == extra_id).ok_or_else(|| anyhow!("that model isn't on this plate"))?;
+    let _ = tokio::fs::remove_file(job_dir(state, id).join("extras").join(&extra.input_file)).await;
+    update_job(state, id, |j| j.extras.retain(|e| e.id != extra_id)).await
+}
+
+/// Where each added model's filament comes from: the base's slot when a tray
+/// is already in use, else a new slot after the base's. No tray = the first.
+/// Returns one slot per model and the trays of the new slots.
+fn extra_slots(base_trays: &[i32], base_slots: usize, trays: &[Option<i32>]) -> (Vec<u32>, Vec<i32>) {
+    let mut new: Vec<i32> = Vec::new();
+    let slots = trays
+        .iter()
+        .map(|tray| match tray.filter(|t| *t >= 0) {
+            None => 1,
+            Some(t) => {
+                if let Some(i) = base_trays.iter().position(|b| *b == t) {
+                    return i as u32 + 1;
+                }
+                let at = new.iter().position(|n| *n == t).unwrap_or_else(|| {
+                    new.push(t);
+                    new.len() - 1
+                });
+                (base_slots + at + 1) as u32
+            }
+        })
+        .collect();
+    (slots, new)
+}
+
+/// The added models a slice asks for, checked.
+fn chosen_extras(job: &Job, opts: &SliceOptions) -> anyhow::Result<Vec<(PlateExtra, ExtraChoice)>> {
+    let mut out = Vec::new();
+    for choice in &opts.extras {
+        let extra = job.extras.iter().find(|e| e.id == choice.id).ok_or_else(|| anyhow!("an added model is no longer on this plate"))?;
+        if !(1..=MAX_EXTRA_COPIES).contains(&choice.copies.unwrap_or(1)) {
+            bail!("copies must be between 1 and {MAX_EXTRA_COPIES}");
+        }
+        if let Some(p) = choice.plate
+            && !extra.plates.iter().any(|x| x.index == p) {
+                bail!("“{}” has no plate {p}", extra.title);
+            }
+        out.push((extra.clone(), choice.clone()));
+    }
+    Ok(out)
 }
 
 /// Inspect the input file and mark the job ready.
@@ -544,9 +704,9 @@ pub fn chosen_objects(inspection: &Inspection, opts: &SliceOptions) -> anyhow::R
 pub fn plan(inspection: &Inspection, printer: &Printer, opts: &SliceOptions) -> Plan {
     let copies = opts.transform.copies();
     if inspection.kind == "sliced" {
-        // Copies, or leaving objects out, means slicing the file again.
+        // Copies, leaving objects out or adding models means slicing the file again.
         let partial = chosen_objects(inspection, opts).ok().flatten().is_some();
-        return if copies > 1 || partial { Plan::Project { copies } } else { Plan::Presliced };
+        return if copies > 1 || partial || !opts.extras.is_empty() { Plan::Project { copies } } else { Plan::Presliced };
     }
     let process = opts.process_profile.clone().or_else(|| printer.process_profile.clone());
     if inspection.kind == "mesh" {
@@ -578,9 +738,9 @@ struct TrayChoice {
     note: String,
 }
 
-async fn tray_choice(state: &Shared, printer: &Printer, inspection: &Inspection, opts: &SliceOptions) -> anyhow::Result<Option<TrayChoice>> {
+async fn tray_choice(state: &Shared, printer: &Printer, inspection: &Inspection, opts: &SliceOptions, extra_trays: &[i32]) -> anyhow::Result<Option<TrayChoice>> {
     let ids = opts.tray_ids.clone().or_else(|| opts.tray_id.map(|t| vec![t])).unwrap_or_default();
-    if !ids.iter().any(|t| *t >= 0) {
+    if !ids.iter().any(|t| *t >= 0) && extra_trays.is_empty() {
         return Ok(None);
     }
     let mesh = inspection.kind == "mesh";
@@ -626,7 +786,17 @@ async fn tray_choice(state: &Shared, printer: &Printer, inspection: &Inspection,
             }
         }
     }
-    choice.note = format!(" using {}", notes.join(", "));
+    // Filaments of added models come after the file's own.
+    for id in extra_trays {
+        let tray = usable.iter().find(|t| t.id == *id).ok_or_else(|| anyhow!("a chosen tray is empty or the printer isn't reporting it right now"))?;
+        let profile = index
+            .filament_for_tray(machine, tray.info_idx.as_deref(), &tray.kind)
+            .ok_or_else(|| anyhow!("no {} filament profile for this printer ({})", tray.kind, tray.label()))?;
+        notes.push(format!("{profile} from {}", tray.label()));
+        choice.filaments.push(SliceFilament { profile, color: Some(tray.color.clone()) });
+        choice.preferred.push(*id);
+    }
+    choice.note = if notes.is_empty() { String::new() } else { format!(" using {}", notes.join(", ")) };
     Ok(Some(choice))
 }
 
@@ -663,7 +833,17 @@ pub async fn slice(state: &Shared, id: &str, opts: SliceOptions) -> anyhow::Resu
         None => None,
     };
     let keep = chosen_objects(&inspection, &SliceOptions { plate: Some(plate), ..opts.clone() })?;
-    let trays = tray_choice(state, &printer, &inspection, &opts).await?;
+    let chosen = chosen_extras(&job, &opts)?;
+    if !chosen.is_empty() && inspection.kind != "mesh" && opts.transform.copies() > 1 {
+        bail!("A 3MF project can't have copies together with added models. Choose 1 copy, or add a copy of the file as another model.");
+    }
+    // A project without filament information has no slots to add to.
+    let mesh = inspection.kind == "mesh";
+    let base_slots = if mesh { 1 } else { inspection.filaments.len() };
+    let base_trays: Vec<i32> = opts.tray_ids.clone().or_else(|| opts.tray_id.map(|t| vec![t])).unwrap_or_default();
+    let wanted_trays: Vec<Option<i32>> = chosen.iter().map(|(_, c)| c.tray_id.filter(|_| base_slots > 0)).collect();
+    let (slots, new_trays) = extra_slots(&base_trays, base_slots, &wanted_trays);
+    let trays = tray_choice(state, &printer, &inspection, &opts, &new_trays).await?;
     let plan = plan(&inspection, &printer, &opts);
     let (filaments, preferred_trays, tray_note) = match (trays, &plan) {
         // Pre-sliced plates print as sliced; the trays only pre-select the mapping.
@@ -693,6 +873,30 @@ pub async fn slice(state: &Shared, id: &str, opts: SliceOptions) -> anyhow::Resu
         _ if tweaks.is_empty() => String::new(),
         _ => format!(", changed: {}", tweaks.describe()),
     };
+    let extras_note = if chosen.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<String> = chosen
+            .iter()
+            .map(|(e, c)| match c.copies.unwrap_or(1) {
+                1 => format!("“{}”", e.title),
+                n => format!("{n} × “{}”", e.title),
+            })
+            .collect();
+        format!(", with {}", names.join(", "))
+    };
+    let extras_dir = job_dir(state, id).join("extras");
+    let slice_extras: Vec<SliceExtra> = chosen
+        .iter()
+        .zip(&slots)
+        .map(|((e, c), slot)| SliceExtra {
+            path: extras_dir.join(&e.input_file),
+            plate: c.plate.or_else(|| e.plates.first().map(|p| p.index)).unwrap_or(1),
+            copies: c.copies.unwrap_or(1),
+            slot: *slot,
+            orient: e.kind == "mesh",
+        })
+        .collect();
 
     remove_from_queue(state, id).await?;
     let job = update_job(state, id, |j| {
@@ -702,10 +906,10 @@ pub async fn slice(state: &Shared, id: &str, opts: SliceOptions) -> anyhow::Resu
         j.push_log(match &plan {
             Plan::Presliced => format!("Using the pre-sliced plate {plate}"),
             Plan::Project { .. } => {
-                format!("Slicing plate {plate}{objects_note} for {}{plate_note} with the project's own settings{tf_note}{tray_note}{tweak_note}", printer.name)
+                format!("Slicing plate {plate}{objects_note} for {}{plate_note} with the project's own settings{tf_note}{tray_note}{tweak_note}{extras_note}", printer.name)
             }
             Plan::Printer { process, .. } => format!(
-                "Slicing plate {plate}{objects_note} for {}{plate_note} with {}{}{tf_note}{tray_note}{tweak_note}",
+                "Slicing plate {plate}{objects_note} for {}{plate_note} with {}{}{tf_note}{tray_note}{tweak_note}{extras_note}",
                 printer.name,
                 printer.machine_profile,
                 process.as_ref().map(|p| format!(" / {p}")).unwrap_or_default()
@@ -722,7 +926,7 @@ pub async fn slice(state: &Shared, id: &str, opts: SliceOptions) -> anyhow::Resu
     let id = id.to_string();
     let asked = SliceOptions { printer_id: Some(printer.id.clone()), plate: Some(plate), ..opts };
     tokio::spawn(async move {
-        if let Err(e) = run_slice(&st, &id, &input, &printer, plate, plan, &filaments, bed_type.as_deref(), keep, expected_objects, tweaks).await {
+        if let Err(e) = run_slice(&st, &id, &input, &printer, plate, plan, &filaments, bed_type.as_deref(), keep, expected_objects, tweaks, &slice_extras).await {
             fail(&st, &id, &e).await;
             let _ = update_job(&st, &id, |j| j.auto_queue = false).await;
             return;
@@ -781,6 +985,17 @@ async fn check_copies(sliced: &std::path::Path, plate: u32, per_copy: u32, copie
     Ok(())
 }
 
+/// Added models that don't fit go to another plate without a word, like copies.
+async fn check_all_placed(sliced: &std::path::Path, plate: u32, expected: u32) -> anyhow::Result<()> {
+    let path = sliced.to_path_buf();
+    let (plates, _) = tokio::task::spawn_blocking(move || crate::threemf::slice_results(&path)).await??;
+    let on_plate = plates.iter().find(|p| p.index == plate).map(|p| p.object_count).unwrap_or(0);
+    if on_plate != 0 && on_plate < expected {
+        bail!("Only {on_plate} of {expected} objects fit on the plate. Remove a model or lower the copies, and slice again.");
+    }
+    Ok(())
+}
+
 fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
@@ -803,7 +1018,9 @@ async fn run_slice(
     keep: Option<Vec<String>>,
     expected_objects: u32,
     tweaks: crate::models::SliceTweaks,
+    extras: &[SliceExtra],
 ) -> anyhow::Result<()> {
+    let mut plate = plate;
     let overrides = if matches!(plan, Plan::Presliced) { Vec::new() } else { tweaks.settings() };
     let dir = job_dir(state, id);
     // Only some objects: take the others off the plate first.
@@ -867,6 +1084,7 @@ async fn run_slice(
                     scale: transform.scale_factor(),
                     rotate_z: transform.rotation(),
                     copies,
+                    extras,
                 })
                 .await;
             state.set_progress(id, None);
@@ -893,7 +1111,14 @@ async fn run_slice(
             if out.output != final_path {
                 tokio::fs::rename(&out.output, &final_path).await.context("saving sliced file")?;
             }
-            if copies > 1 {
+            if let Some(p) = out.plate {
+                plate = p;
+            }
+            if !extras.is_empty() {
+                // A mesh base counts as one object per copy.
+                let base = if mesh { copies } else { expected_objects };
+                check_all_placed(&final_path, plate, base + out.extra_objects).await?;
+            } else if copies > 1 {
                 check_copies(&final_path, plate, expected_objects.max(1), copies).await?;
             }
             (final_path, label)
@@ -937,7 +1162,7 @@ async fn run_slice(
         );
         j.output_file = file_name;
         // Remember the result on the plate, for its card when choosing again.
-        if let Some(p) = j.inspection.as_mut().and_then(|i| i.plates.iter_mut().find(|p| p.index == outcome.plate)) {
+        if let Some(p) = j.inspection.as_mut().filter(|_| extras.is_empty()).and_then(|i| i.plates.iter_mut().find(|p| p.index == outcome.plate)) {
             p.prediction_secs = outcome.prediction_secs.or(p.prediction_secs);
             p.weight_g = outcome.weight_g.or(p.weight_g);
         }
@@ -1650,6 +1875,7 @@ pub async fn reslice_queued(state: &Shared, item_id: &str, printer_id: &str) -> 
         tray_id: None,
         tray_ids: None,
         bed_type: asked.bed_type.clone().filter(|b| target.plates.is_empty() || target.plates.iter().any(|p| p.eq_ignore_ascii_case(b))),
+        extras: asked.extras.iter().map(|e| ExtraChoice { tray_id: None, ..e.clone() }).collect(),
         ..asked
     };
     let from = printers.iter().find(|p| p.id == item.printer_id).map(|p| p.name.clone()).unwrap_or_default();
@@ -1683,6 +1909,9 @@ pub async fn slice_all(state: &Shared, id: &str, opts: SliceOptions, plates: Opt
     };
     if wanted.is_empty() {
         bail!("no plates to slice");
+    }
+    if wanted.len() > 1 && !opts.extras.is_empty() {
+        bail!("Added models go on one plate. Queue one plate at a time, or remove them first.");
     }
     // Make sure a printer is known before creating copies.
     let printer = find_printer(state, opts.printer_id.as_deref()).await?;
@@ -1737,7 +1966,11 @@ fn same_file(a: &Job, b: &Job) -> bool {
 
 /// The plate a job prints: the sliced one, or the one it is being sliced for.
 fn job_plate(j: &Job) -> Option<u32> {
-    j.slice.as_ref().map(|s| s.plate).or_else(|| j.auto_slice.as_ref().and_then(|o| o.plate))
+    // With added models the sliced file has one plate; the options say which it was.
+    j.slice
+        .as_ref()
+        .map(|s| s.options.as_ref().filter(|o| !o.extras.is_empty()).and_then(|o| o.plate).unwrap_or(s.plate))
+        .or_else(|| j.auto_slice.as_ref().and_then(|o| o.plate))
 }
 
 /// For a job that went to the printer: the first plate of its file that no
@@ -1804,6 +2037,7 @@ pub async fn queue_next_plate(state: &Shared, id: &str) -> anyhow::Result<Job> {
         objects: None,
         bed_type: sliced.bed_type.clone(),
         tweaks: sliced.tweaks.clone(),
+        extras: vec![],
     };
     let mut copy = new_job(job.source, job.model_url.clone(), job.model_id.clone(), job.model_title.clone(), job.model_cover.clone(), job.file.clone());
     copy.copied_from = Some(job.id.clone());
@@ -1871,6 +2105,9 @@ pub async fn reprint(state: &Shared, id: &str) -> anyhow::Result<Job> {
         job = update_job(state, &job.id, |j| {
             j.copied_from = Some(old.id.clone());
             j.push_log("Downloading again: the earlier files are gone");
+            if !old.extras.is_empty() {
+                j.push_log("Models added to the plate before aren't downloaded again. Add them again if you want them.");
+            }
         })
         .await?;
         if !old.files_removed {
@@ -1887,6 +2124,15 @@ pub async fn reprint(state: &Shared, id: &str) -> anyhow::Result<Job> {
     job.input_file = Some(input.clone());
     job.inspection = old.inspection.clone();
     job.state = JobState::Ready;
+    // Added models come along, so slicing it again gives the same plate.
+    if !old.extras.is_empty() {
+        tokio::fs::create_dir_all(to.join("extras")).await?;
+        for extra in &old.extras {
+            if tokio::fs::copy(from.join("extras").join(&extra.input_file), to.join("extras").join(&extra.input_file)).await.is_ok() {
+                job.extras.push(extra.clone());
+            }
+        }
+    }
     if let (Some(mut slice), Some(out)) = (old.slice.clone(), old.output_file.clone()) {
         let copied = if out == input {
             true
@@ -1967,6 +2213,19 @@ mod tests {
         left.sort();
         assert_eq!(left, ["new", "week"]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn extras_share_slots_where_trays_match() {
+        // The base uses trays 2 and 5. Tray 5 shares its slot, 7 used twice
+        // gets one new slot, no tray takes the first.
+        let (slots, new) = extra_slots(&[2, 5], 2, &[Some(5), Some(7), Some(7), None, Some(-1), Some(9)]);
+        assert_eq!(slots, [2, 3, 3, 1, 1, 4]);
+        assert_eq!(new, [7, 9]);
+        // No trays chosen for the base: any tray is a new slot.
+        let (slots, new) = extra_slots(&[], 4, &[Some(1)]);
+        assert_eq!(slots, [5]);
+        assert_eq!(new, [1]);
     }
 
     #[tokio::test]

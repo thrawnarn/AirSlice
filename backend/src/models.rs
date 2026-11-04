@@ -795,6 +795,43 @@ pub struct SliceOptions {
     /// Changes to the profile's or project's settings for this slice.
     #[serde(default, skip_serializing_if = "SliceTweaks::is_empty")]
     pub tweaks: SliceTweaks,
+    /// Models added to the plate (`Job::extras`) to print along with this one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extras: Vec<ExtraChoice>,
+}
+
+/// How one added model goes on the plate.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ExtraChoice {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copies: Option<u32>,
+    /// A 3MF's plate to take the objects from; its first when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plate: Option<u32>,
+    /// Tray to print it from (global tray id); the first filament when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tray_id: Option<i32>,
+}
+
+/// A model added to a job's plate, kept in the job's `extras/` folder.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlateExtra {
+    pub id: String,
+    pub title: String,
+    pub source: Source,
+    #[serde(default)]
+    pub model_url: String,
+    pub cover: Option<String>,
+    /// File name inside the job's `extras/` folder.
+    pub input_file: String,
+    /// `mesh`, `project` or `sliced`, as in `Inspection::kind`.
+    pub kind: String,
+    #[serde(default)]
+    pub plates: Vec<PlateInfo>,
+    /// It has several filaments in the file, and prints in one here.
+    #[serde(default)]
+    pub multicolor: bool,
 }
 
 /// Quick changes to the print settings; unset fields keep the profile's or
@@ -968,6 +1005,9 @@ pub struct Job {
     /// Sliced file name inside the job directory.
     #[serde(default)]
     pub output_file: Option<String>,
+    /// Other models to print on the same plate.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extras: Vec<PlateExtra>,
     /// Kept out of history clean-up and listed under Favourites.
     #[serde(default)]
     pub favorite: bool,

@@ -359,6 +359,145 @@ pub fn keep_plate_objects(src: &Path, dest: &Path, plate: u32, keep: &[String]) 
     })
 }
 
+/// How many filaments a project has.
+pub fn filament_count(path: &Path) -> Option<usize> {
+    let mut zip = open(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&read_text(&mut zip, PROJECT_SETTINGS)?).ok()?;
+    v.get("filament_colour")?.as_array().map(Vec::len)
+}
+
+/// Copies the project with only `plate` left, as plate 1, and room for
+/// `extra_slots` more filaments. OrcaSlicer's arrange gathers every plate's
+/// objects onto one, and it crashes when given more filaments than the project
+/// has. Other objects keep their mesh files but lose their build item, settings
+/// and assembly entries; removing only some of those fails to load.
+pub fn single_plate(src: &Path, dest: &Path, plate: u32, extra_slots: usize) -> anyhow::Result<()> {
+    let plate_block = regex::Regex::new(r#"(?s)\s*<plate>.*?</plate>"#)?;
+    let plate_id = format!(r#"key="plater_id" value="{plate}""#);
+    let object_id = regex::Regex::new(r#"key="object_id" value="([^"]*)""#)?;
+    let settings = {
+        let mut zip = open(src)?;
+        read_text(&mut zip, MODEL_SETTINGS).unwrap_or_default()
+    };
+    // Without plates in the file, everything is on the one plate.
+    let keep: Option<Vec<String>> = plate_block
+        .find_iter(&settings)
+        .find(|b| b.as_str().contains(&plate_id))
+        .map(|b| object_id.captures_iter(b.as_str()).map(|c| c[1].to_string()).collect());
+    let object = regex::Regex::new(r#"(?s)\s*<object id="([^"]*)">.*?</object>"#)?;
+    let assembled = regex::Regex::new(r#"\s*<assemble_item object_id="([^"]*)"[^>]*/>"#)?;
+    let item = regex::Regex::new(r#"\s*<item objectid="([^"]*)"[^>]*/>"#)?;
+    let kept = |c: &regex::Captures, keep: &[String]| if keep.contains(&c[1].to_string()) { c[0].to_string() } else { String::new() };
+    rewrite(src, dest, &[MODEL_SETTINGS, "3D/3dmodel.model", PROJECT_SETTINGS], |name, text| {
+        Ok(match (name, &keep) {
+            (PROJECT_SETTINGS, _) => {
+                let mut v: serde_json::Value = serde_json::from_str(&text).context("reading project settings")?;
+                pad_filaments(&mut v, extra_slots);
+                serde_json::to_vec_pretty(&v)?
+            }
+            (MODEL_SETTINGS, Some(keep)) => {
+                let text = plate_block.replace_all(&text, |p: &regex::Captures| {
+                    if p[0].contains(&plate_id) { p[0].replace(&plate_id, r#"key="plater_id" value="1""#) } else { String::new() }
+                });
+                let text = object.replace_all(&text, |c: &regex::Captures| kept(c, keep));
+                assembled.replace_all(&text, |c: &regex::Captures| kept(c, keep)).into_owned().into_bytes()
+            }
+            (_, Some(keep)) => item.replace_all(&text, |c: &regex::Captures| kept(c, keep)).into_owned().into_bytes(),
+            (_, None) => text.into_bytes(),
+        })
+    })
+}
+
+/// Make room for more filaments in project settings: per-filament values copy
+/// the last filament's, and the flush tables grow.
+fn pad_filaments(v: &mut serde_json::Value, extra: usize) {
+    use serde_json::Value;
+    let Some(map) = v.as_object_mut() else { return };
+    let n = map.get("filament_colour").and_then(|c| c.as_array()).map_or(0, Vec::len);
+    if extra == 0 || n == 0 {
+        return;
+    }
+    let total = n + extra;
+    let text = |s: String| Value::String(s);
+    for (key, value) in map.iter_mut() {
+        let Some(list) = value.as_array_mut() else { continue };
+        match key.as_str() {
+            "filament_self_index" => *list = (1..=total).map(|i| text(i.to_string())).collect(),
+            // The process's entry, one per filament, the printer's.
+            "different_settings_to_system" if !list.is_empty() => {
+                let at = list.len() - 1;
+                list.splice(at..at, std::iter::repeat_n(text(String::new()), extra));
+            }
+            "flush_volumes_matrix" if list.len() == n * n => {
+                let old = std::mem::take(list);
+                for row in 0..total {
+                    for col in 0..total {
+                        list.push(match (row == col, row < n && col < n) {
+                            (true, _) => text("0".into()),
+                            (_, true) => old[row * n + col].clone(),
+                            _ => text(DEFAULT_FLUSH.into()),
+                        });
+                    }
+                }
+            }
+            "flush_volumes_vector" if list.len() == 2 * n => {
+                list.extend(std::iter::repeat_n(text(DEFAULT_FLUSH_MULTIPLIER.into()), 2 * extra));
+            }
+            key if (crate::filament_keys::PER_FILAMENT.contains(&key) || key.starts_with("filament_")) && !list.is_empty() && list.len() % n == 0 => {
+                let group = list.len() / n;
+                let last: Vec<Value> = list[list.len() - group..].to_vec();
+                for _ in 0..extra {
+                    list.extend(last.iter().cloned());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Flush volume in mm³ between a new filament and any other.
+const DEFAULT_FLUSH: &str = "280";
+const DEFAULT_FLUSH_MULTIPLIER: &str = "140";
+
+/// Copies the project, setting the filament slot of each object `slot_of`
+/// knows by name.
+pub fn set_object_slots(src: &Path, dest: &Path, slot_of: impl Fn(&str) -> Option<u32>) -> anyhow::Result<()> {
+    let object = regex::Regex::new(r#"(?s)<object id="[^"]*">.*?</object>"#)?;
+    let name = regex::Regex::new(r#"<metadata key="name" value="([^"]*)""#)?;
+    let extruder = regex::Regex::new(r#"(<metadata key="extruder" value=")[^"]*"#)?;
+    rewrite(src, dest, &[MODEL_SETTINGS], |_, text| {
+        let edited = object.replace_all(&text, |o: &regex::Captures| {
+            match name.captures(&o[0]).and_then(|c| slot_of(&c[1])) {
+                Some(slot) => extruder.replacen(&o[0], 1, |e: &regex::Captures| format!("{}{slot}", &e[1])).into_owned(),
+                None => o[0].to_string(),
+            }
+        });
+        Ok(edited.into_owned().into_bytes())
+    })
+}
+
+/// A plate's objects as numbers in the order of the file's build items, which
+/// is how OrcaSlicer numbers the files of `--export-stl` (`obj_1_…`). `None`
+/// when the file doesn't say which objects are on which plate.
+pub fn plate_object_numbers(path: &Path, plate: u32) -> Option<Vec<usize>> {
+    let mut zip = open(path).ok()?;
+    let settings = read_text(&mut zip, MODEL_SETTINGS)?;
+    let model = read_text(&mut zip, "3D/3dmodel.model")?;
+    let block = regex::Regex::new(r#"(?s)<plate>.*?</plate>"#).ok()?;
+    let plate_id = format!(r#"key="plater_id" value="{plate}""#);
+    let found = block.find_iter(&settings).find(|b| b.as_str().contains(&plate_id))?;
+    let object_id = regex::Regex::new(r#"key="object_id" value="([^"]*)""#).ok()?;
+    let on_plate: Vec<String> = object_id.captures_iter(found.as_str()).map(|c| c[1].to_string()).collect();
+    let item = regex::Regex::new(r#"<item objectid="([^"]*)""#).ok()?;
+    Some(
+        item.captures_iter(&model)
+            .enumerate()
+            .filter(|(_, c)| on_plate.contains(&c[1].to_string()))
+            .map(|(i, _)| i + 1)
+            .collect(),
+    )
+}
+
 const PROJECT_SETTINGS: &str = "Metadata/project_settings.config";
 const MODEL_SETTINGS: &str = "Metadata/model_settings.config";
 
@@ -409,6 +548,108 @@ pub fn find_output(dir: &Path) -> Option<PathBuf> {
 pub mod tests {
     use super::*;
     use std::io::Write;
+
+    fn two_plate_project(path: &Path) {
+        let settings = r#"<config>
+  <object id="4">
+    <metadata key="name" value="one"/>
+    <metadata key="extruder" value="1"/>
+  </object>
+  <object id="7">
+    <metadata key="name" value="airslice-e0_1.stl"/>
+    <metadata key="extruder" value="1"/>
+  </object>
+  <plate>
+    <metadata key="plater_id" value="1"/>
+    <model_instance><metadata key="object_id" value="4"/></model_instance>
+  </plate>
+  <plate>
+    <metadata key="plater_id" value="2"/>
+    <model_instance><metadata key="object_id" value="7"/></model_instance>
+  </plate>
+  <assemble>
+   <assemble_item object_id="4" instance_id="0"/>
+   <assemble_item object_id="7" instance_id="0"/>
+  </assemble>
+</config>"#;
+        let model = r#"<build><item objectid="7" printable="1"/><item objectid="4" printable="1"/></build>"#;
+        let project = serde_json::json!({
+            "filament_colour": ["#111111", "#222222"],
+            "nozzle_temperature": ["220", "230"],
+            "filament_dev_ams_drying_time": ["1", "2", "3", "4"],
+            "filament_self_index": ["1", "2"],
+            "different_settings_to_system": ["process", "a", "b", "printer"],
+            "flush_volumes_matrix": ["0", "5", "6", "0"],
+            "flush_volumes_vector": ["1", "2", "3", "4"],
+            "nozzle_diameter": ["0.4", "0.4"],
+            "printable_area": ["0x0", "256x0"],
+        });
+        make_3mf(path, &[
+            ("Metadata/model_settings.config", settings.as_bytes()),
+            ("3D/3dmodel.model", model.as_bytes()),
+            ("Metadata/project_settings.config", project.to_string().as_bytes()),
+        ]);
+    }
+
+    fn entry(path: &Path, name: &str) -> String {
+        read_text(&mut open(path).unwrap(), name).unwrap()
+    }
+
+    #[test]
+    fn single_plate_keeps_one_plate_and_adds_filaments() {
+        let dir = std::env::temp_dir().join(format!("as-3mf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (src, dest) = (dir.join("a.3mf"), dir.join("b.3mf"));
+        two_plate_project(&src);
+        single_plate(&src, &dest, 2, 1).unwrap();
+
+        let settings = entry(&dest, super::MODEL_SETTINGS);
+        assert_eq!(settings.matches("<plate>").count(), 1);
+        assert!(settings.contains(r#"key="plater_id" value="1""#));
+        assert!(settings.contains(r#"<object id="7">"#) && !settings.contains(r#"<object id="4">"#));
+        assert!(settings.contains(r#"assemble_item object_id="7""#) && !settings.contains(r#"assemble_item object_id="4""#));
+        let model = entry(&dest, "3D/3dmodel.model");
+        assert!(model.contains(r#"objectid="7""#) && !model.contains(r#"objectid="4""#));
+
+        let v: serde_json::Value = serde_json::from_str(&entry(&dest, PROJECT_SETTINGS)).unwrap();
+        let list = |k: &str| v[k].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(list("filament_colour"), ["#111111", "#222222", "#222222"]);
+        assert_eq!(list("nozzle_temperature"), ["220", "230", "230"]);
+        assert_eq!(list("filament_dev_ams_drying_time"), ["1", "2", "3", "4", "3", "4"]);
+        assert_eq!(list("filament_self_index"), ["1", "2", "3"]);
+        assert_eq!(list("different_settings_to_system"), ["process", "a", "b", "", "printer"]);
+        assert_eq!(list("flush_volumes_matrix"), ["0", "5", "280", "6", "0", "280", "280", "280", "0"]);
+        assert_eq!(list("flush_volumes_vector").len(), 6);
+        // A printer's settings aren't per filament, even at the same length.
+        assert_eq!(list("nozzle_diameter").len(), 2);
+        assert_eq!(list("printable_area").len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sets_the_filament_of_named_objects() {
+        let dir = std::env::temp_dir().join(format!("as-3mf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (src, dest) = (dir.join("a.3mf"), dir.join("b.3mf"));
+        two_plate_project(&src);
+        set_object_slots(&src, &dest, |n| n.starts_with("airslice-e0_").then_some(3)).unwrap();
+        let settings = entry(&dest, super::MODEL_SETTINGS);
+        assert!(settings.contains("value=\"airslice-e0_1.stl\"/>\n    <metadata key=\"extruder\" value=\"3\""));
+        assert!(settings.contains("value=\"one\"/>\n    <metadata key=\"extruder\" value=\"1\""));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn numbers_a_plates_objects_by_build_order() {
+        let dir = std::env::temp_dir().join(format!("as-3mf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("a.3mf");
+        two_plate_project(&src);
+        assert_eq!(plate_object_numbers(&src, 1), Some(vec![2]));
+        assert_eq!(plate_object_numbers(&src, 2), Some(vec![1]));
+        assert_eq!(plate_object_numbers(&src, 3), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     pub fn make_3mf(path: &Path, entries: &[(&str, &[u8])]) {
         let f = std::fs::File::create(path).unwrap();

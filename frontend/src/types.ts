@@ -166,6 +166,8 @@ export interface SlicedFilament {
 }
 
 export interface SliceOutcome {
+  /** What was asked for; added models are in here. */
+  options?: { extras?: { id: string; copies?: number | null; plate?: number | null; tray_id?: number | null }[] } | null;
   printer_id: string;
   /** Setting changes made for this slice. */
   tweaks?: SliceTweaks;
@@ -247,7 +249,20 @@ export interface Suggestion {
   complete: boolean;
 }
 
+/** A model added to a job's plate. */
+export interface PlateExtra {
+  id: string;
+  title: string;
+  source: Source;
+  model_url: string;
+  cover: string | null;
+  kind: "mesh" | "project" | "sliced";
+  plates: PlateInfo[];
+  multicolor: boolean;
+}
+
 export interface Job {
+  extras?: PlateExtra[];
   id: string;
   created_at: number;
   updated_at: number;

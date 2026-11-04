@@ -656,6 +656,7 @@ pub async fn quick_print(State(state): State<Shared>, Json(body): Json<QuickPrin
         bed_type: body.bed_type,
         objects: body.objects,
         tweaks,
+        extras: vec![],
     };
     let job = jobs::create(&state, &body.url, body.file_id.as_deref(), Some((slice, body.print.unwrap_or_default())))
         .await
@@ -674,6 +675,30 @@ pub async fn upload(State(state): State<Shared>, mut multipart: axum::extract::M
         return Ok(Json(view(&state, job).await));
     }
     Err(AppError::bad_request("no file in the upload (use the form field \"file\")"))
+}
+
+// ------------------------------------------------------------------ models added to the plate
+
+pub async fn add_extra(State(state): State<Shared>, Path(id): Path<String>, Json(body): Json<CreateBody>) -> ApiResult<Json<JobView>> {
+    let job = jobs::add_extra(&state, &id, &body.url, body.file_id.as_deref()).await.map_err(bad)?;
+    Ok(Json(view(&state, job).await))
+}
+
+pub async fn upload_extra(State(state): State<Shared>, Path(id): Path<String>, mut multipart: axum::extract::Multipart) -> ApiResult<Json<JobView>> {
+    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::bad_request(e.to_string()))? {
+        if field.name() != Some("file") {
+            continue;
+        }
+        let name = field.file_name().unwrap_or("upload.3mf").to_string();
+        let job = jobs::add_extra_upload(&state, &id, &name, field).await.map_err(bad)?;
+        return Ok(Json(view(&state, job).await));
+    }
+    Err(AppError::bad_request("no file in the upload (use the form field \"file\")"))
+}
+
+pub async fn remove_extra(State(state): State<Shared>, Path((id, extra)): Path<(String, String)>) -> ApiResult<Json<JobView>> {
+    let job = jobs::remove_extra(&state, &id, &extra).await.map_err(bad)?;
+    Ok(Json(view(&state, job).await))
 }
 
 // ------------------------------------------------------------------ preview

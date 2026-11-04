@@ -1,6 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api, findModelLink } from "./api";
-import type { ConnectionSettings, FilamentInfo, Job, MeshTransform, NextPlateSuggestion, PlateInfo, SliceTweaks, Printer, ProfileChoices, QueueEntry, ResolvedModel, Suggestion, Tray, TrayFilament } from "./types";
+import type { ConnectionSettings, FilamentInfo, Job, MeshTransform, NextPlateSuggestion, PlateInfo, SliceTweaks, Printer, ProfileChoices, QueueEntry, ResolvedModel, Spool as SpoolmanSpool, Suggestion, Tray, TrayFilament } from "./types";
 import { PrintControls } from "./PrintersView";
 import { TrayPicker, TraysSheet, loadedTrays, money, plateName, spoolLine, usePlates, usePrinterSpools } from "./Trays";
 import { TweakPicker, cleanTweaks, describeTweaks } from "./Tweaks";
@@ -425,6 +425,123 @@ function PrinterPicker({ printers, value, onChange }: { printers: Printer[]; val
   );
 }
 
+/** What's chosen for one added model. */
+type ExtraPick = { copies: number; tray: number; plate?: number };
+
+/** Other models to print on the same plate: add by link or file. */
+function PlateExtras({
+  job,
+  picks,
+  trays,
+  onPick,
+  onChange,
+  onManage,
+  spools,
+}: {
+  job: Job;
+  picks: Record<string, ExtraPick>;
+  trays: Tray[];
+  onPick: (id: string, pick: Partial<ExtraPick>) => void;
+  onChange: (j: Job) => void;
+  onManage: () => void;
+  spools?: Record<string, SpoolmanSpool> | null;
+}) {
+  const extras = job.extras ?? [];
+  const [link, setLink] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  async function run(work: () => Promise<Job>) {
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await work());
+      setLink("");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const addFile = (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    run(() => api.upload<Job>(`jobs/${job.id}/extras/upload`, form));
+  };
+
+  return (
+    <>
+      <h2>{tr("More models on this plate")}</h2>
+      <div className="panel transform">
+        {extras.map((x) => {
+          const pick = picks[x.id] ?? { copies: 1, tray: -1 };
+          return (
+            <div key={x.id} className="extra">
+              <div className="row" style={{ gap: 10 }}>
+                {x.cover && <img className="extra-cover" src={remoteImg(x.cover)} alt="" loading="lazy" />}
+                <div className="grow ellipsis" style={{ fontWeight: 620 }}>{x.title}</div>
+                <button type="button" className="btn small" disabled={busy} onClick={() => run(() => api.del<Job>(`jobs/${job.id}/extras/${x.id}`))}>
+                  {tr("Remove")}
+                </button>
+              </div>
+              {x.multicolor && <p className="faint small" style={{ margin: "6px 0 0" }}>{tr("This model has several colours in its file. Added to this plate, it prints in one colour.")}</p>}
+              {x.plates.length > 1 && (
+                <label className="field" style={{ margin: "8px 0 0" }}>
+                  <span>{tr("Plate from this file")}</span>
+                  <select className="input" value={pick.plate ?? x.plates[0].index} onChange={(e) => onPick(x.id, { plate: Number(e.target.value) })}>
+                    {x.plates.map((p) => (
+                      <option key={p.index} value={p.index}>
+                        {p.name ?? tr("Plate {0}", [p.index])}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {trays.length > 0 && (
+                <div className="tf-row">
+                  <span className="tf-label">{tr("Print with")}</span>
+                  <TrayPicker title={tr("Print {0} with", [x.title])} trays={trays} value={pick.tray} onChange={(id) => onPick(x.id, { tray: id })} onManage={onManage} spools={spools} />
+                </div>
+              )}
+              <CopiesStepper value={pick.copies} onChange={(n) => onPick(x.id, { copies: n })} />
+            </div>
+          );
+        })}
+        <form
+          className="row"
+          style={{ gap: 8, padding: "8px 0" }}
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (link.trim()) run(() => api.post<Job>(`jobs/${job.id}/extras`, { url: link.trim() }));
+          }}
+        >
+          <input className="input grow" value={link} onChange={(e) => setLink(e.target.value)} placeholder={tr("Paste a model link")} aria-label={tr("Link to the model to add")} disabled={busy} />
+          <button className="btn small" type="submit" disabled={busy || !link.trim()}>
+            {busy ? tr("Adding…") : tr("Add")}
+          </button>
+          <button className="btn small" type="button" disabled={busy} onClick={() => fileInput.current?.click()}>
+            {tr("Choose file")}
+          </button>
+          <input
+            ref={fileInput}
+            type="file"
+            accept=".3mf,.stl,.obj,.step,.stp"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = "";
+              if (f) addFile(f);
+            }}
+          />
+        </form>
+        {extras.length > 0 && <p className="faint small" style={{ margin: "0 0 8px" }}>{tr("The slicer arranges everything on the plate. You'll see the result after slicing.")}</p>}
+        {error && <Notice tone="err">{error}</Notice>}
+      </div>
+    </>
+  );
+}
+
 function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer[]; onChange: (j: Job) => void }) {
   const insp = job.inspection!;
   const initialPrinter = (printers.find((p) => p.is_default) ?? printers[0])?.id ?? "";
@@ -520,7 +637,13 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
     [trayIds, trayKey],
   );
   const chosenProfile = trayProfiles.find((t) => t.tray_id === chosenTray?.id);
-  const reslice = insp.kind === "sliced" && (copies > 1 || excluded.length > 0);
+  const extras = job.extras ?? [];
+  const [extraPicks, setExtraPicks] = useState<Record<string, ExtraPick>>(() =>
+    Object.fromEntries((job.slice?.options?.extras ?? []).map((e) => [e.id, { copies: e.copies ?? 1, tray: e.tray_id ?? -1, plate: e.plate ?? undefined }])),
+  );
+  const extraPick = (id: string): ExtraPick => extraPicks[id] ?? { copies: 1, tray: trayIds?.find((t) => t >= 0) ?? loaded[0]?.id ?? -1 };
+  const pickExtra = (id: string, pick: Partial<ExtraPick>) => setExtraPicks((p) => ({ ...p, [id]: { ...extraPick(id), ...pick } }));
+  const reslice = insp.kind === "sliced" && (copies > 1 || excluded.length > 0 || extras.length > 0);
   const effective = insp.kind === "sliced" ? (reslice ? "project" : "presliced") : mesh ? "printer" : mode === "auto" ? (sameModel ? "project" : "printer") : mode;
   const anyTray = (trayIds ?? []).some((t) => t >= 0);
 
@@ -533,8 +656,14 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
     filament_profile: mesh && filament ? filament : undefined,
     tray_id: mesh && chosenTray ? chosenTray.id : undefined,
     tray_ids: !mesh && anyTray ? trayIds : undefined,
-    ...(mesh ? cleanTransform(transform) : copies > 1 ? { copies } : {}),
+    ...(mesh ? cleanTransform(transform) : copies > 1 && !extras.length ? { copies } : {}),
     tweaks: effective === "presliced" ? undefined : cleanTweaks(tweaks),
+    extras: extras.length
+      ? extras.map((x) => {
+          const p = extraPick(x.id);
+          return { id: x.id, copies: p.copies, plate: p.plate, tray_id: p.tray >= 0 ? p.tray : undefined };
+        })
+      : undefined,
   });
 
   async function sliceAll() {
@@ -666,7 +795,9 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
         note={
           mesh
             ? tr("The slicer decides the final placement and may turn the model to lie flat.")
-            : copies > 1
+            : extras.length
+              ? tr("Shows this model only. With added models, the slicer lays out the whole plate again.")
+              : copies > 1
               ? tr("Shown as laid out in the file. The copies are placed when slicing.")
               : insp.kind === "project" && !sameModel
                 ? tr("Shown as laid out in the file. Slicing for your printer can move things.")
@@ -739,6 +870,18 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
         </>
       )}
 
+      {printer && (
+        <PlateExtras
+          job={job}
+          picks={Object.fromEntries(extras.map((x) => [x.id, extraPick(x.id)]))}
+          trays={loaded}
+          onPick={pickExtra}
+          onChange={onChange}
+          onManage={() => setShowTrays(true)}
+          spools={spoolInfo?.trays}
+        />
+      )}
+
       {insp.kind === "project" && printer && insp.printer_model && !sameModel && (
         <Notice tone="warn">
           {tr("This file was set up for a {0}. It will be sliced with your {1} profile instead.", [insp.printer_model.replace(/^Bambu Lab /, ""), printer.printer_model.replace(/^Bambu Lab /, "")])}
@@ -758,7 +901,13 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
         </div>
       )}
       {insp.kind === "sliced" && (
-        <Notice>{reslice ? tr("This file is already sliced. It will be sliced again to fit {0} copies.", [copies]) : tr("This file is already sliced, so it goes straight to the printer.")}</Notice>
+        <Notice>
+          {extras.length
+            ? tr("This file is already sliced. It will be sliced again together with the added models.")
+            : reslice
+              ? tr("This file is already sliced. It will be sliced again to fit {0} copies.", [copies])
+              : tr("This file is already sliced, so it goes straight to the printer.")}
+        </Notice>
       )}
 
       {effective !== "presliced" && plateChoices.length > 0 && (
@@ -812,7 +961,7 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
 
       {mesh ? (
         <TransformControls value={transform} onChange={setTransform} />
-      ) : (
+      ) : extras.length ? null : (
         <div className="panel transform">
           <CopiesStepper value={copies} onChange={setCopies} />
         </div>
@@ -826,7 +975,7 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
         <button className="btn grow" onClick={() => queuePlate(plate)} disabled={busy || !printerId}>
           {insp.plates.length > 1 ? tr("Queue plate {0}", [plate]) : tr("Add to the queue")}
         </button>
-        {insp.plates.length > 1 && (
+        {insp.plates.length > 1 && !extras.length && (
           <button className="btn grow" onClick={sliceAll} disabled={busy || !printerId}>
             {tr("Queue all {0} plates", [insp.plates.length])}
           </button>

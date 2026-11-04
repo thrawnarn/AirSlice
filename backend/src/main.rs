@@ -6,6 +6,7 @@ mod config;
 mod diagnostics;
 mod error;
 mod events;
+mod filament_keys;
 mod gcode;
 mod i18n;
 mod notify;
