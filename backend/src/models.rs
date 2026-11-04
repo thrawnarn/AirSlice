@@ -544,6 +544,10 @@ pub struct PlateInfo {
     pub prediction_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight_g: Option<f64>,
+    /// Filament slots this plate uses; `None` when the file doesn't tell without
+    /// reading its meshes (painted models, colour changes per layer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filaments: Option<Vec<u32>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -801,6 +805,9 @@ pub struct SliceOptions {
     /// Models added to the plate (`Job::extras`) to print along with this one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extras: Vec<ExtraChoice>,
+    /// Other plates of this file to print together with `plate`, on one plate.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_plates: Vec<u32>,
 }
 
 /// How one added model goes on the plate.

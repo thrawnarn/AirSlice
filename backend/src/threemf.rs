@@ -124,7 +124,7 @@ pub fn inspect(path: &Path) -> anyhow::Result<Inspection> {
     if !lower.ends_with(".3mf") {
         return Ok(Inspection {
             kind: "mesh".into(),
-            plates: vec![PlateInfo { index: 1, name: None, has_thumbnail: false, object_count: 1, objects: vec![], prediction_secs: None, weight_g: None }],
+            plates: vec![PlateInfo { index: 1, name: None, has_thumbnail: false, object_count: 1, objects: vec![], prediction_secs: None, weight_g: None, filaments: None }],
             ..Default::default()
         });
     }
@@ -156,6 +156,7 @@ pub fn inspect(path: &Path) -> anyhow::Result<Inspection> {
                         objects,
                         prediction_secs: None,
                         weight_g: None,
+                        filaments: None,
                     });
                 }
             }
@@ -165,7 +166,7 @@ pub fn inspect(path: &Path) -> anyhow::Result<Inspection> {
         let mut idx: Vec<u32> = if sliced_plates.is_empty() { vec![1] } else { sliced_plates.clone() };
         idx.sort_unstable();
         idx.dedup();
-        plates = idx.into_iter().map(|i| PlateInfo { index: i, name: None, has_thumbnail: false, object_count: 0, objects: vec![], prediction_secs: None, weight_g: None }).collect();
+        plates = idx.into_iter().map(|i| PlateInfo { index: i, name: None, has_thumbnail: false, object_count: 0, objects: vec![], prediction_secs: None, weight_g: None, filaments: None }).collect();
     }
     // A sliced file can only print the plates that have G-code.
     if !sliced_plates.is_empty() {
@@ -211,8 +212,82 @@ pub fn inspect(path: &Path) -> anyhow::Result<Inspection> {
                 .enumerate()
                 .map(|(i, t)| FilamentInfo { kind: t.clone(), color: colors.get(i).map(|c| hex_color(c)).unwrap_or_default() })
                 .collect();
+            set_plate_filaments(&mut zip, &names, &mut out, &v);
         }
     Ok(out)
+}
+
+/// Settings that send a feature to a filament of its own, 0 meaning the object's.
+const FEATURE_FILAMENTS: &[&str] = &["support_filament", "support_interface_filament", "wall_filament", "sparse_infill_filament", "solid_infill_filament"];
+
+/// Work out each plate's filament slots from the objects on it. Left unknown
+/// when something else can bring in a filament: painting, or a change per layer.
+fn set_plate_filaments(zip: &mut zip::ZipArchive<std::fs::File>, names: &[String], out: &mut Inspection, project: &serde_json::Value) {
+    let count = out.filaments.len() as u32;
+    if count == 0 {
+        return;
+    }
+    if read_text(zip, CUSTOM_GCODE).is_some_and(|t| regex::Regex::new(r#"\bextruder="[1-9]"#).is_ok_and(|r| r.is_match(&t))) {
+        return;
+    }
+    if names.iter().filter(|n| n.ends_with(".model")).any(|n| has_painting(zip, n)) {
+        return;
+    }
+    let Some(root) = read_text(zip, MODEL_SETTINGS).and_then(|x| parse_xml(&x).ok()) else { return };
+    let number = |m: &HashMap<String, String>, key: &str| m.get(key).and_then(|v| v.parse::<u32>().ok()).filter(|n| *n > 0);
+    let mut by_object: HashMap<String, Vec<u32>> = HashMap::new();
+    for object in root.children_named("config").flat_map(|c| c.children_named("object")) {
+        let Some(id) = object.attr("id") else { continue };
+        let meta = object.metadata();
+        let own = number(&meta, "extruder");
+        let mut slots = Vec::new();
+        let mut parts = 0;
+        for part in object.children_named("part") {
+            parts += 1;
+            let m = part.metadata();
+            slots.extend(number(&m, "extruder").or(own));
+            slots.extend(FEATURE_FILAMENTS.iter().filter_map(|k| number(&m, k)));
+        }
+        if parts == 0 {
+            slots.extend(own);
+        }
+        slots.extend(FEATURE_FILAMENTS.iter().filter_map(|k| number(&meta, k)));
+        by_object.insert(id.to_string(), slots);
+    }
+    let global: Vec<u32> = FEATURE_FILAMENTS.iter().flat_map(|k| json_list(project, k)).filter_map(|v| v.parse().ok()).filter(|n| *n > 0).collect();
+    for plate in &mut out.plates {
+        let mut slots: Vec<u32> = plate.objects.iter().filter_map(|o| by_object.get(&o.id)).flatten().chain(&global).copied().collect();
+        // An object without a filament of its own takes the first.
+        if plate.objects.iter().any(|o| by_object.get(&o.id).is_none_or(Vec::is_empty)) {
+            slots.push(1);
+        }
+        slots.sort_unstable();
+        slots.dedup();
+        if !plate.objects.is_empty() && !slots.is_empty() && slots.iter().all(|s| *s <= count) {
+            plate.filaments = Some(slots);
+        }
+    }
+}
+
+/// Whether a model file holds painted triangles, read in pieces since these files can be huge.
+fn has_painting(zip: &mut zip::ZipArchive<std::fs::File>, name: &str) -> bool {
+    const MARKS: [&[u8]; 2] = [b"paint_color=", b"mmu_segmentation="];
+    let Ok(mut file) = zip.by_name(name) else { return true };
+    let mut buf = vec![0u8; 1 << 20];
+    let mut kept = 0;
+    loop {
+        let Ok(read) = file.read(&mut buf[kept..]) else { return true };
+        if read == 0 {
+            return false;
+        }
+        let end = kept + read;
+        if MARKS.iter().any(|m| buf[..end].windows(m.len()).any(|w| w == *m)) {
+            return true;
+        }
+        // Keep the tail, in case a mark falls between two pieces.
+        kept = 32.min(end);
+        buf.copy_within(end - kept..end, 0);
+    }
 }
 
 fn thumbnail_entry(names: &[String], plate: u32) -> Option<String> {
@@ -366,24 +441,39 @@ pub fn filament_count(path: &Path) -> Option<usize> {
     v.get("filament_colour")?.as_array().map(Vec::len)
 }
 
-/// Copies the project with only `plate` left, as plate 1, and room for
-/// `extra_slots` more filaments. OrcaSlicer's arrange gathers every plate's
-/// objects onto one, and it crashes when given more filaments than the project
+/// Copies the project with the objects of `plates` (and only those) on plate 1,
+/// `copies` times, and room for `extra_slots` more filaments. OrcaSlicer's arrange
+/// gathers every plate's objects onto one, it has no way to repeat a project
+/// without slicing it, and it crashes when given more filaments than the project
 /// has. Other objects keep their mesh files but lose their build item, settings
 /// and assembly entries; removing only some of those fails to load.
-pub fn single_plate(src: &Path, dest: &Path, plate: u32, extra_slots: usize) -> anyhow::Result<()> {
+pub fn single_plate(src: &Path, dest: &Path, plates: &[u32], copies: u32, extra_slots: usize) -> anyhow::Result<()> {
+    let copies = copies.max(1) as usize;
     let plate_block = regex::Regex::new(r#"(?s)\s*<plate>.*?</plate>"#)?;
-    let plate_id = format!(r#"key="plater_id" value="{plate}""#);
+    let plater_id = regex::Regex::new(r#"key="plater_id" value="(\d+)""#)?;
+    let instance_block = regex::Regex::new(r#"(?s)\s*<model_instance>.*?</model_instance>"#)?;
+    let instance_id = regex::Regex::new(r#"(key="instance_id" value=")\d+"#)?;
     let object_id = regex::Regex::new(r#"key="object_id" value="([^"]*)""#)?;
+    let number_of = |block: &str| plater_id.captures(block).and_then(|c| c[1].parse::<u32>().ok());
     let settings = {
         let mut zip = open(src)?;
         read_text(&mut zip, MODEL_SETTINGS).unwrap_or_default()
     };
-    // Without plates in the file, everything is on the one plate.
-    let keep: Option<Vec<String>> = plate_block
-        .find_iter(&settings)
-        .find(|b| b.as_str().contains(&plate_id))
-        .map(|b| object_id.captures_iter(b.as_str()).map(|c| c[1].to_string()).collect());
+    // The plate's instances, repeated. Without plates in the file, everything is on the one plate.
+    let chosen: Vec<&str> = plates.iter().filter_map(|p| plate_block.find_iter(&settings).map(|b| b.as_str()).find(|b| number_of(b) == Some(*p))).collect();
+    let instances: Vec<&str> = chosen.iter().flat_map(|b| instance_block.find_iter(b).map(|m| m.as_str())).collect();
+    let keep: Option<Vec<String>> = (!chosen.is_empty()).then(|| instances.iter().filter_map(|i| object_id.captures(i).map(|c| c[1].to_string())).collect());
+    let merged_plate = chosen.first().map(|first| {
+        let bare = instance_block.replace_all(first, "");
+        let numbered = plater_id.replace(&bare, r#"key="plater_id" value="1""#);
+        let mut all = String::new();
+        for copy in 0..copies {
+            for i in &instances {
+                all.push_str(&instance_id.replace(i, |c: &regex::Captures| format!("{}{copy}", &c[1])));
+            }
+        }
+        numbered.replace("</plate>", &format!("{all}\n  </plate>"))
+    });
     let object = regex::Regex::new(r#"(?s)\s*<object id="([^"]*)">.*?</object>"#)?;
     let assembled = regex::Regex::new(r#"\s*<assemble_item object_id="([^"]*)"[^>]*/>"#)?;
     let item = regex::Regex::new(r#"\s*<item objectid="([^"]*)"[^>]*/>"#)?;
@@ -396,16 +486,36 @@ pub fn single_plate(src: &Path, dest: &Path, plate: u32, extra_slots: usize) -> 
                 serde_json::to_vec_pretty(&v)?
             }
             (MODEL_SETTINGS, Some(keep)) => {
+                let mut placed = false;
                 let text = plate_block.replace_all(&text, |p: &regex::Captures| {
-                    if p[0].contains(&plate_id) { p[0].replace(&plate_id, r#"key="plater_id" value="1""#) } else { String::new() }
+                    if placed || !plates.contains(&number_of(&p[0]).unwrap_or(0)) {
+                        return String::new();
+                    }
+                    placed = true;
+                    merged_plate.clone().unwrap_or_default()
                 });
                 let text = object.replace_all(&text, |c: &regex::Captures| kept(c, keep));
-                assembled.replace_all(&text, |c: &regex::Captures| kept(c, keep)).into_owned().into_bytes()
+                assembled
+                    .replace_all(&text, |c: &regex::Captures| {
+                        let line = kept(c, keep);
+                        // Each copy needs the object's own assembly entry; a part's has no instance.
+                        if line.contains(r#"instance_id="0""#) { (0..copies).map(|n| line.replace(r#"instance_id="0""#, &format!(r#"instance_id="{n}""#))).collect::<String>() } else { line }
+                    })
+                    .into_owned()
+                    .into_bytes()
             }
-            (_, Some(keep)) => item.replace_all(&text, |c: &regex::Captures| kept(c, keep)).into_owned().into_bytes(),
+            (_, Some(keep)) => item.replace_all(&text, |c: &regex::Captures| kept(c, keep).repeat(copies)).into_owned().into_bytes(),
             (_, None) => text.into_bytes(),
         })
     })
+}
+
+/// How many objects each plate of a project holds, in plate order.
+pub fn plate_instance_counts(path: &Path) -> Vec<u32> {
+    let Ok(mut zip) = open(path) else { return vec![] };
+    let settings = read_text(&mut zip, MODEL_SETTINGS).unwrap_or_default();
+    let Ok(block) = regex::Regex::new(r#"(?s)<plate>.*?</plate>"#) else { return vec![] };
+    block.find_iter(&settings).map(|b| b.as_str().matches("<model_instance>").count() as u32).collect()
 }
 
 /// Make room for more filaments in project settings: per-filament values copy
@@ -634,7 +744,7 @@ pub mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (src, dest) = (dir.join("a.3mf"), dir.join("b.3mf"));
         two_plate_project(&src);
-        single_plate(&src, &dest, 2, 1).unwrap();
+        single_plate(&src, &dest, &[2], 1, 1).unwrap();
 
         let settings = entry(&dest, super::MODEL_SETTINGS);
         assert_eq!(settings.matches("<plate>").count(), 1);
@@ -659,6 +769,45 @@ pub mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn with_plates(settings: &str, model: &[u8], project: serde_json::Value) -> Inspection {
+        let dir = std::env::temp_dir().join(format!("as-3mf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.3mf");
+        make_3mf(&path, &[
+            ("Metadata/model_settings.config", settings.as_bytes()),
+            ("3D/Objects/o.model", model),
+            ("Metadata/project_settings.config", project.to_string().as_bytes()),
+        ]);
+        let out = inspect(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        out
+    }
+
+    const PLATES: &str = r#"<config>
+  <object id="1"><metadata key="name" value="a"/><metadata key="extruder" value="1"/></object>
+  <object id="2"><metadata key="name" value="b"/><metadata key="extruder" value="2"/>
+    <part id="1"><metadata key="name" value="p"/></part>
+    <part id="2"><metadata key="name" value="q"/><metadata key="extruder" value="3"/></part>
+  </object>
+  <plate><metadata key="plater_id" value="1"/><model_instance><metadata key="object_id" value="1"/></model_instance></plate>
+  <plate><metadata key="plater_id" value="2"/><model_instance><metadata key="object_id" value="2"/></model_instance></plate>
+</config>"#;
+
+    #[test]
+    fn knows_each_plates_filaments() {
+        let project = serde_json::json!({"filament_type": ["PLA", "PLA", "PLA", "PLA"], "filament_colour": ["#1", "#2", "#3", "#4"]});
+        let out = with_plates(PLATES, b"<model/>", project.clone());
+        assert_eq!(out.plates[0].filaments, Some(vec![1]));
+        assert_eq!(out.plates[1].filaments, Some(vec![2, 3]));
+        // A support filament counts on every plate.
+        let mut with_support = project.clone();
+        with_support["support_filament"] = serde_json::json!("4");
+        assert_eq!(with_plates(PLATES, b"<model/>", with_support).plates[0].filaments, Some(vec![1, 4]));
+        // Painting can use any filament, so it stays unknown.
+        let out = with_plates(PLATES, br#"<triangle v1="0" paint_color="8"/>"#, project);
+        assert_eq!(out.plates[0].filaments, None);
+    }
+
     #[test]
     fn merges_filaments() {
         let dir = std::env::temp_dir().join(format!("as-3mf-{}", uuid::Uuid::new_v4()));
@@ -679,6 +828,24 @@ pub mod tests {
         let v: serde_json::Value = serde_json::from_str(&entry(&dest, PROJECT_SETTINGS)).unwrap();
         // Slots 1 and 2 are one now; 3 still purges from and to them.
         assert_eq!(v["flush_volumes_matrix"], serde_json::json!(["0","0","2", "0","0","4", "5","6","0"]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn single_plate_combines_plates_and_repeats_them() {
+        let dir = std::env::temp_dir().join(format!("as-3mf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (src, dest) = (dir.join("a.3mf"), dir.join("b.3mf"));
+        two_plate_project(&src);
+        single_plate(&src, &dest, &[2, 1], 2, 0).unwrap();
+        let settings = entry(&dest, super::MODEL_SETTINGS);
+        assert_eq!(settings.matches("<plate>").count(), 1);
+        assert!(settings.contains(r#"key="plater_id" value="1""#) && !settings.contains(r#"key="plater_id" value="2""#));
+        // Both plates' objects, twice each.
+        assert_eq!(settings.matches("<model_instance>").count(), 4);
+        assert_eq!(settings.matches(r#"assemble_item object_id="7" instance_id="1""#).count(), 1);
+        assert_eq!(entry(&dest, "3D/3dmodel.model").matches("<item ").count(), 4);
+        assert_eq!(plate_instance_counts(&dest), [4]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

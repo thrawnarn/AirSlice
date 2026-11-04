@@ -104,6 +104,7 @@ pub fn router(state: Shared) -> Router<Shared> {
         .route("/jobs/{id}/layers", get(jobs::layers))
         .route("/jobs/{id}/layers/{n}", get(jobs::layer))
         .route("/jobs/{id}/plates/{plate}/thumbnail", get(jobs::thumbnail))
+        .route("/jobs/{id}/extras/{extra}/plates/{plate}/thumbnail", get(jobs::extra_thumbnail))
         .route("/jobs/{id}/preview", get(jobs::preview))
         .route("/jobs/{id}/tray-suggestion", get(jobs::tray_suggestion))
         .route("/print", post(jobs::quick_print))

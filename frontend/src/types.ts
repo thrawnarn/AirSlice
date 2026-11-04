@@ -138,6 +138,8 @@ export interface ConnectionSettings {
 }
 
 export interface PlateInfo {
+  /** Filament slots this plate uses, when the file tells. */
+  filaments?: number[] | null;
   index: number;
   name: string | null;
   has_thumbnail: boolean;
@@ -169,7 +171,7 @@ export interface SliceOutcome {
   /** The files on the plate, when models were added. */
   files?: SlicedFile[];
   /** What was asked for; added models are in here. */
-  options?: { copies?: number | null; extras?: { id: string; copies?: number | null; plate?: number | null; tray_id?: number | null }[] } | null;
+  options?: { copies?: number | null; also_plates?: number[]; extras?: { id: string; copies?: number | null; plate?: number | null; tray_id?: number | null }[] } | null;
   printer_id: string;
   /** Setting changes made for this slice. */
   tweaks?: SliceTweaks;

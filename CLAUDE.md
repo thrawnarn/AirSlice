@@ -243,11 +243,15 @@ screenshots).
   tell per-filament keys when a project has 1–2 filaments, hence `filament_keys.rs`) →
   `--export-3mf --arrange 1` without filaments (they segfault here) → `set_object_slots`
   edits `extruder` by object name (`airslice-e<extra>_…`) → `--slice 1`. `--repetitions` fails
-  on an export without slicing, so a project base has no copies with extras. Overflow: Orca
+  on an export without slicing, and `--clone-objects` fails (-2) on a 3MF, so `single_plate` repeats `<item>`, `<model_instance>` and the assembly entry itself; it also gathers several plates (`SliceOptions::also_plates`). Overflow: Orca
   moves objects to another plate (`check_all_placed` counts), or -102 "unprintable area", which
   is also the prime tower growing off the bed (default y 220; cube + Benchy in two colours does it).
   `wipe_tower_x/y` in process.json made no difference and re-exporting a mesh project segfaults, so -102 retries once with
   `enable_prime_tower` 0, then says the models don't fit. The output has one plate: `slice.plate` is 1, `options.plate` is the file's plate.
+- A plate's filaments (`PlateInfo::filaments`, `threemf::set_plate_filaments`): each object's and part's
+  `extruder` plus feature filaments. Unknown (all shown) when any model is painted or
+  `custom_gcode_per_layer` changes filament, which scanning meshes would be needed for. Trays of slots
+  off the plate are still sent, so "next plate" keeps them.
 - Several filaments on one tray: re-slicing with the same colours changes nothing, since Orca's CLI
   keeps the project's `flush_volumes_matrix` and still changes tool (t-rex plate: 132 g, 10.2 h,
   255 changes at any colours; zeroing the matrix alone 52 g, 8 h, 223 changes). `jobs::merged_slots` +

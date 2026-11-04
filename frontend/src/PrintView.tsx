@@ -7,7 +7,7 @@ import { TrayPicker, TraysSheet, loadedTrays, money, plateName, spoolLine, usePl
 import { TweakPicker, cleanTweaks, describeTweaks } from "./Tweaks";
 import { CameraView, Notice, Sheet, Spool, fmtLeft, trayLabel, fmtDuration, fmtMinutes, isBusy, printerState, toast, usePoll, remoteImg } from "./ui";
 import { locale, tr } from "./i18n";
-import { ModelPanel, SOURCE_NAMES, shortModel } from "./ModelView";
+import { FileRow, ModelPanel, SOURCE_NAMES, shortModel } from "./ModelView";
 import { QueueBoard } from "./Queue";
 
 const PlatePreview = lazy(() => import("./PlatePreview"));
@@ -460,7 +460,9 @@ function addableJobs(jobs: Job[], query: string): Job[] {
 }
 
 /** Choose a model to add: from a link or file, MakerWorld collections, or earlier jobs. */
-function AddModelSheet({ job, onAdded, onClose }: { job: Job; onAdded: (j: Job) => void; onClose: () => void }) {
+function AddModelSheet({ job, printer, onAdded, onClose }: { job: Job; printer: Printer | null; onAdded: (j: Job) => void; onClose: () => void }) {
+  // A model with several files or print profiles: which one.
+  const [choices, setChoices] = useState<ResolvedModel | null>(null);
   const [tab, setTab] = useState<"link" | "collections" | "history">("link");
   const [link, setLink] = useState("");
   const [busy, setBusy] = useState(false);
@@ -485,7 +487,24 @@ function AddModelSheet({ job, onAdded, onClose }: { job: Job; onAdded: (j: Job) 
       setBusy(false);
     }
   }
-  const addUrl = (url: string) => add(() => api.post<Job>(`jobs/${job.id}/extras`, { url }));
+  /** Look the link up first: with more than one file or profile, a person chooses. */
+  async function addUrl(url: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const model = await api.post<ResolvedModel>("resolve", { url });
+      if (model.files.length > 1) {
+        setChoices(model);
+        setBusy(false);
+        return;
+      }
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+      return;
+    }
+    await add(() => api.post<Job>(`jobs/${job.id}/extras`, { url }));
+  }
   const addFiles = (files: File[]) =>
     void add(async () => {
       let last = job;
@@ -507,7 +526,7 @@ function AddModelSheet({ job, onAdded, onClose }: { job: Job; onAdded: (j: Job) 
     <Sheet title={tr("Add a model")} onClose={onClose}>
       <div className="segmented" role="group" aria-label={tr("Add a model")} style={{ marginBottom: 14 }}>
         {tabs.map(([id, label]) => (
-          <button key={id} type="button" aria-pressed={tab === id} onClick={() => setTab(id)}>
+          <button key={id} type="button" aria-pressed={tab === id && !choices} onClick={() => { setChoices(null); setTab(id); }}>
             {label}
           </button>
         ))}
@@ -515,7 +534,29 @@ function AddModelSheet({ job, onAdded, onClose }: { job: Job; onAdded: (j: Job) 
       {busy && <Notice>{tr("Adding the model. A large file can take a while…")}</Notice>}
       {error && <Notice tone="err">{error}</Notice>}
 
-      {tab === "link" && (
+      {choices ? (
+        <>
+          <button type="button" className="linkish settings-back" onClick={() => setChoices(null)}>
+            {tr("‹ Back")}
+          </button>
+          <h3 style={{ margin: "4px 0 10px" }}>{choices.title}</h3>
+          <p className="faint small" style={{ margin: "0 0 10px" }}>{tr("Choose which one to add to the plate.")}</p>
+          <ul className="files">
+            {choices.files.map((f) => (
+              <li key={f.id}>
+                <FileRow
+                  file={f}
+                  selected={f.id === choices.preselected_file_id}
+                  printer={printer}
+                  onSelect={() => {
+                    if (!busy) void add(() => api.post<Job>(`jobs/${job.id}/extras`, { url: choices.url, file_id: f.id }));
+                  }}
+                />
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : tab === "link" && (
         <>
           <form
             className="row"
@@ -551,9 +592,9 @@ function AddModelSheet({ job, onAdded, onClose }: { job: Job; onAdded: (j: Job) 
         </>
       )}
 
-      {tab === "collections" && <CollectionPicker disabled={busy} onPick={(url) => void addUrl(url)} />}
+      {!choices && tab === "collections" && <CollectionPicker disabled={busy} onPick={(url) => void addUrl(url)} />}
 
-      {tab === "history" && (
+      {!choices && tab === "history" && (
         <>
           <input className="input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={tr("Search earlier models")} aria-label={tr("Search earlier models")} style={{ width: "100%", marginBottom: 10 }} />
           {!jobs && !error && <p className="faint">{tr("Loading…")}</p>}
@@ -620,8 +661,10 @@ function PlateExtras({
   spools,
   openId,
   onOpen,
+  printer,
 }: {
   job: Job;
+  printer: Printer | null;
   picks: Record<string, ExtraPick>;
   trays: Tray[];
   onPick: (id: string, pick: Partial<ExtraPick>) => void;
@@ -665,16 +708,25 @@ function PlateExtras({
           >
             {x.multicolor && <p className="faint small" style={{ margin: "0 0 8px" }}>{tr("This model has several colours in its file. Added to this plate, it prints in one colour.")}</p>}
             {x.plates.length > 1 && (
-              <label className="field">
-                <span>{tr("Plate from this file")}</span>
-                <select className="input" value={pick.plate ?? x.plates[0].index} onChange={(e) => onPick(x.id, { plate: Number(e.target.value) })}>
-                  {x.plates.map((p) => (
-                    <option key={p.index} value={p.index}>
-                      {p.name ?? tr("Plate {0}", [p.index])}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <>
+                <div className="small muted" style={{ fontWeight: 620, marginBottom: 6 }}>{tr("Plate from this file")}</div>
+                <div className="plates" role="group" aria-label={tr("Plate from this file")}>
+                  {x.plates.map((p) => {
+                    const on = (pick.plate ?? x.plates[0].index) === p.index;
+                    return (
+                      <div key={p.index} className={`plate ${on ? "chosen" : ""}`}>
+                        <button type="button" className="plate-pick" aria-pressed={on} onClick={() => onPick(x.id, { plate: p.index })}>
+                          <div className="plate-img">
+                            {p.has_thumbnail && <img src={`api/jobs/${job.id}/extras/${x.id}/plates/${p.index}/thumbnail`} alt="" loading="lazy" />}
+                          </div>
+                          <div className="plate-label">{p.name ?? tr("Plate {0}", [p.index])}</div>
+                          {p.object_count > 0 && <div className="faint">{p.object_count === 1 ? tr("1 object") : `${p.object_count} objects`}</div>}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
             )}
             {trays.length > 0 && (
               <div className="tf-row">
@@ -697,6 +749,7 @@ function PlateExtras({
       {adding && (
         <AddModelSheet
           job={job}
+          printer={printer}
           onAdded={(j) => {
             onChange(j);
             const last = j.extras?.[j.extras.length - 1];
@@ -732,6 +785,9 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
   const plates = usePlates();
   // "" = the printer's default plate, or the file's/profile's own when it has none.
   const [bedType, setBedType] = useState("");
+  // Other plates of this file to print together with the chosen one.
+  const [alsoPlates, setAlsoPlates] = useState<number[]>(() => job.slice?.options?.also_plates ?? []);
+  useEffect(() => setAlsoPlates((a) => a.filter((p) => p !== plate)), [plate]);
   // Objects of the chosen plate left out of the print.
   const [excluded, setExcluded] = useState<string[]>([]);
   useEffect(() => setExcluded([]), [plate]);
@@ -775,6 +831,11 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
   const loaded = loadedTrays(printer);
   const mesh = insp.kind === "mesh";
   const slots: FilamentInfo[] = mesh ? [{ type: "", color: "" }] : insp.filaments;
+  // The filaments the chosen plate uses; all of them when the file doesn't say.
+  const printedPlates = insp.plates.filter((p) => p.index === plate || alsoPlates.includes(p.index));
+  const plateFilaments = printedPlates.every((p) => p.filaments) ? printedPlates.flatMap((p) => p.filaments ?? []) : null;
+  const onPlate = (slot: number) => mesh || !plateFilaments || plateFilaments.includes(slot + 1);
+  const shownSlots = slots.filter((_, i) => onPlate(i)).length;
 
   // Suggest trays (same material, closest colour) until the user picks.
   useEffect(() => {
@@ -812,9 +873,10 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
   const [extraPicks, setExtraPicks] = useState<Record<string, ExtraPick>>(() =>
     Object.fromEntries((job.slice?.options?.extras ?? []).map((e) => [e.id, { copies: e.copies ?? 1, tray: e.tray_id ?? -1, plate: e.plate ?? undefined }])),
   );
-  const extraPick = (id: string): ExtraPick => extraPicks[id] ?? { copies: 1, tray: trayIds?.find((t) => t >= 0) ?? loaded[0]?.id ?? -1 };
+  const extraPick = (id: string): ExtraPick => extraPicks[id] ?? { copies: 1, tray: trayIds?.find((t, i) => t >= 0 && onPlate(i)) ?? loaded[0]?.id ?? -1 };
   const pickExtra = (id: string, pick: Partial<ExtraPick>) => setExtraPicks((p) => ({ ...p, [id]: { ...extraPick(id), ...pick } }));
-  const reslice = insp.kind === "sliced" && (copies > 1 || excluded.length > 0 || extras.length > 0);
+  const combining = extras.length > 0 || alsoPlates.length > 0;
+  const reslice = insp.kind === "sliced" && (copies > 1 || excluded.length > 0 || combining);
   const effective = insp.kind === "sliced" ? (reslice ? "project" : "presliced") : mesh ? "printer" : mode === "auto" ? (sameModel ? "project" : "printer") : mode;
   const anyTray = (trayIds ?? []).some((t) => t >= 0);
 
@@ -827,7 +889,8 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
     filament_profile: mesh && filament ? filament : undefined,
     tray_id: mesh && chosenTray ? chosenTray.id : undefined,
     tray_ids: !mesh && anyTray ? trayIds : undefined,
-    ...(mesh ? cleanTransform(transform) : copies > 1 && !extras.length ? { copies } : {}),
+    ...(mesh ? cleanTransform(transform) : copies > 1 ? { copies } : {}),
+    also_plates: index === plate && alsoPlates.length ? alsoPlates : undefined,
     tweaks: effective === "presliced" ? undefined : cleanTweaks(tweaks),
     extras: extras.length
       ? extras.map((x) => {
@@ -911,7 +974,7 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
       <FileCard
         title={job.model_title}
         cover={job.model_cover}
-        summary={[insp.plates.length > 1 ? tr("Plate {0}", [plate]) : null, (mesh ? transform.copies ?? 1 : copies) > 1 ? tr("{0} copies", [mesh ? transform.copies ?? 1 : copies]) : null, ...slots.map((_, i) => trayOf(i)).filter(Boolean).map((t) => trayLabel(t!))].filter(Boolean).join(" · ")}
+        summary={[insp.plates.length > 1 ? tr("Plate {0}", [plate]) : null, (mesh ? transform.copies ?? 1 : copies) > 1 ? tr("{0} copies", [mesh ? transform.copies ?? 1 : copies]) : null, ...slots.map((_, i) => (onPlate(i) ? trayOf(i) : null)).filter(Boolean).map((t) => trayLabel(t!))].filter(Boolean).join(" · ")}
         open={openFile === BASE_FILE || !extras.length}
         onToggle={extras.length ? () => setOpenFile(openFile === BASE_FILE ? "" : BASE_FILE) : undefined}
       >
@@ -936,6 +999,23 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
           </div>
         ))}
       </div>
+
+      {insp.plates.length > 1 && (
+        <details className="objects-pick" open={alsoPlates.length > 0}>
+          <summary className="small">
+            {alsoPlates.length ? tr("Printing {0} plates together", [alsoPlates.length + 1]) : tr("Print other plates together with this one")}
+          </summary>
+          <div className="check-list">
+            {insp.plates.filter((p) => p.index !== plate).map((p) => (
+              <label key={p.index} className="check">
+                <input type="checkbox" checked={alsoPlates.includes(p.index)} onChange={(e) => setAlsoPlates((a) => (e.target.checked ? [...a, p.index] : a.filter((x) => x !== p.index)))} />
+                <span>{p.name ?? tr("Plate {0}", [p.index])}</span>
+              </label>
+            ))}
+          </div>
+          <p className="faint small" style={{ margin: "4px 0 0" }}>{tr("Everything goes on one build plate, arranged by the slicer.")}</p>
+        </details>
+      )}
 
       {!mesh && plateObjects.length > 1 && (
         <details className="objects-pick" open={excluded.length > 0}>
@@ -975,8 +1055,8 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
         note={
           mesh
             ? tr("The slicer decides the final placement and may turn the model to lie flat.")
-            : extras.length
-              ? tr("Shows this model only. With added models, the slicer lays out the whole plate again.")
+            : combining
+              ? tr("Shows this plate only. Put together with others, the slicer lays out the whole plate again.")
               : copies > 1
               ? tr("Shown as laid out in the file. The copies are placed when slicing.")
               : insp.kind === "project" && !sameModel
@@ -987,7 +1067,8 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
 
       {printer && slots.length > 0 && (
         <>
-          <h2>{slots.length === 1 ? tr("Filament") : tr("Filaments")}</h2>
+          <h2>{shownSlots === 1 ? tr("Filament") : tr("Filaments")}</h2>
+          {shownSlots < slots.length && <p className="faint small" style={{ margin: "-4px 0 8px" }}>{(alsoPlates.length ? tr("These plates use {0} of the file's {1} filaments.", [shownSlots, slots.length]) : tr("This plate uses {0} of the file's {1} filaments.", [shownSlots, slots.length]))}</p>}
           {loaded.length === 0 ? (
             <Notice tone="warn">
               {printer.status.connected
@@ -997,6 +1078,7 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
           ) : (
             <ul className="mapping panel" style={{ padding: "4px 16px" }}>
               {slots.map((f, i) => {
+                if (!onPlate(i)) return null;
                 const t = trayOf(i);
                 return (
                   <li key={i} className="map-row">
@@ -1064,8 +1146,6 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
       )}
       {mesh ? (
         <TransformControls value={transform} onChange={setTransform} />
-      ) : extras.length ? (
-        <p className="faint small">{tr("A 3MF can't have copies together with other files. To print it twice, add it again from History.")}</p>
       ) : (
         <div className="panel transform">
           <CopiesStepper value={copies} onChange={setCopies} />
@@ -1076,6 +1156,7 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
       {printer && (
         <PlateExtras
           job={job}
+          printer={printer}
           picks={Object.fromEntries(extras.map((x) => [x.id, extraPick(x.id)]))}
           trays={loaded}
           onPick={pickExtra}
@@ -1110,7 +1191,7 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
       )}
       {insp.kind === "sliced" && (
         <Notice>
-          {extras.length
+          {combining
             ? tr("This file is already sliced. It will be sliced again together with the added models.")
             : reslice
               ? tr("This file is already sliced. It will be sliced again to fit {0} copies.", [copies])
@@ -1156,13 +1237,13 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
 
       {error && <Notice tone="err">{error}</Notice>}
       <button className="btn go" onClick={() => slice()} disabled={busy || !printerId}>
-        {insp.kind === "sliced" && !reslice ? tr("Continue") : insp.plates.length > 1 ? tr("Slice plate {0}", [plate]) : tr("Slice")}
+        {insp.kind === "sliced" && !reslice ? tr("Continue") : insp.plates.length > 1 && !alsoPlates.length ? tr("Slice plate {0}", [plate]) : tr("Slice")}
       </button>
       <div className="row" style={{ gap: 8, marginTop: 8 }}>
         <button className="btn grow" onClick={() => queuePlate(plate)} disabled={busy || !printerId}>
-          {insp.plates.length > 1 ? tr("Queue plate {0}", [plate]) : tr("Add to the queue")}
+          {insp.plates.length > 1 && !alsoPlates.length ? tr("Queue plate {0}", [plate]) : tr("Add to the queue")}
         </button>
-        {insp.plates.length > 1 && !extras.length && (
+        {insp.plates.length > 1 && !combining && (
           <button className="btn grow" onClick={sliceAll} disabled={busy || !printerId}>
             {tr("Queue all {0} plates", [insp.plates.length])}
           </button>

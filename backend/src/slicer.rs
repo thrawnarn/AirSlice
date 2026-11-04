@@ -354,6 +354,8 @@ pub struct SliceRequest<'a> {
     pub copies: u32,
     /// Other models to arrange on the plate with this one.
     pub extras: &'a [SliceExtra],
+    /// Other plates of the project to print with `plate`, on one plate.
+    pub also_plates: &'a [u32],
     /// Filament slots that print from one tray: the slot each one becomes.
     /// Empty when none do.
     pub merge: &'a [u32],
@@ -551,8 +553,10 @@ impl Slicer {
         let mut inputs: Vec<String> = Vec::new();
         let mut id_args: Vec<String> = Vec::new();
         let mut extra_objects = 0;
-        if !req.extras.is_empty() {
-            let meshes = self.extra_meshes(&req, &settings_args).await?;
+        // Added models, or plates put together: everything gets arranged on one plate.
+        let together = !req.extras.is_empty() || (!mesh && !req.also_plates.is_empty());
+        if together {
+            let meshes = if req.extras.is_empty() { Vec::new() } else { self.extra_meshes(&req, &settings_args).await? };
             extra_objects = meshes.iter().map(|m| m.copies).sum();
             let work = req.work_dir.join("extras-work");
             if mesh {
@@ -584,7 +588,7 @@ impl Slicer {
 
         // OrcaSlicer only repeats projects (--repetitions fails on a bare
         // mesh), so make the mesh a project first, with its size and turn.
-        if mesh && req.copies > 1 && req.extras.is_empty() {
+        if mesh && req.copies > 1 && !together {
             let prep = req.work_dir.join("mesh");
             reset_dir(&prep).await?;
             let mut args = vec!["--export-3mf".to_string(), "mesh.3mf".into()];
@@ -637,7 +641,7 @@ impl Slicer {
 
         // Models added to a plate can make the prime tower too deep for where it
         // stands (OrcaSlicer's -102). Filament changes still purge without it.
-        if !req.extras.is_empty() && run.error.as_deref().is_some_and(|e| e.contains(TOWER_OFF_BED)) {
+        if together && run.error.as_deref().is_some_and(|e| e.contains(TOWER_OFF_BED)) {
             match &process_path {
                 Some(p) => set_json_setting(p, PRIME_TOWER, "0").await?,
                 None => {
@@ -661,11 +665,11 @@ impl Slicer {
                 log_tail,
                 adjusted,
                 notes,
-                plate: (!req.extras.is_empty()).then_some(plate),
+                plate: together.then_some(plate),
                 extra_objects,
             }),
             // Still off the bed without a tower: the models themselves don't fit.
-            (_, _, Some(err)) if !req.extras.is_empty() && err.contains(TOWER_OFF_BED) => {
+            (_, _, Some(err)) if together && err.contains(TOWER_OFF_BED) => {
                 bail!("The models don't all fit on the plate. Remove a model or lower the copies, and slice again.")
             }
             (_, _, Some(_)) if refused_filament(&text).is_some() => {
@@ -759,9 +763,11 @@ impl Slicer {
     async fn combine(&self, req: &SliceRequest<'_>, input: &Path, meshes: &[ExtraMesh], settings: &[String], work: &Path) -> anyhow::Result<PathBuf> {
         let slots = crate::threemf::filament_count(input).unwrap_or(0);
         let extra_slots = req.filaments.len().saturating_sub(slots);
+        tokio::fs::create_dir_all(work).await?;
         let prepared = work.join("base.3mf");
-        let (src, dest, plate) = (input.to_path_buf(), prepared.clone(), req.plate);
-        tokio::task::spawn_blocking(move || crate::threemf::single_plate(&src, &dest, plate, extra_slots)).await??;
+        let plates: Vec<u32> = std::iter::once(req.plate).chain(req.also_plates.iter().copied()).collect();
+        let (src, dest, copies) = (input.to_path_buf(), prepared.clone(), req.copies);
+        tokio::task::spawn_blocking(move || crate::threemf::single_plate(&src, &dest, &plates, copies, extra_slots)).await??;
 
         let dir = work.join("combined");
         let mut project = prepared;
@@ -798,6 +804,15 @@ impl Slicer {
             break;
         }
         let combined = output.ok_or_else(|| anyhow!("OrcaSlicer couldn't put the models together"))?;
+        // What doesn't fit goes on a further plate, which saves slicing to find out.
+        let counts = crate::threemf::plate_instance_counts(&combined);
+        if counts.len() > 1 && counts.iter().skip(1).sum::<u32>() > 0 {
+            bail!(
+                "Only {} of {} objects fit on the plate. Remove a file or lower the copies, and slice again.",
+                counts[0],
+                counts.iter().sum::<u32>()
+            );
+        }
         let edited = work.join("combined-slots.3mf");
         let slot_by_extra: Vec<u32> = req.extras.iter().map(|e| e.slot).collect();
         let dest = edited.clone();
@@ -1111,6 +1126,7 @@ mod tests {
             copies: 3,
             extras: &[],
             merge: &[],
+            also_plates: &[],
         };
         assert_eq!(
             Transform::of(&base).args().join(" "),

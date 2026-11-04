@@ -798,7 +798,7 @@ pub fn plan(inspection: &Inspection, printer: &Printer, opts: &SliceOptions) -> 
     if inspection.kind == "sliced" {
         // Copies, leaving objects out or adding models means slicing the file again.
         let partial = chosen_objects(inspection, opts).ok().flatten().is_some();
-        return if copies > 1 || partial || !opts.extras.is_empty() { Plan::Project { copies } } else { Plan::Presliced };
+        return if copies > 1 || partial || !opts.extras.is_empty() || !opts.also_plates.is_empty() { Plan::Project { copies } } else { Plan::Presliced };
     }
     let process = opts.process_profile.clone().or_else(|| printer.process_profile.clone());
     if inspection.kind == "mesh" {
@@ -926,8 +926,10 @@ pub async fn slice(state: &Shared, id: &str, opts: SliceOptions) -> anyhow::Resu
     };
     let keep = chosen_objects(&inspection, &SliceOptions { plate: Some(plate), ..opts.clone() })?;
     let chosen = chosen_extras(&job, &opts)?;
-    if !chosen.is_empty() && inspection.kind != "mesh" && opts.transform.copies() > 1 {
-        bail!("A 3MF project can't have copies together with added models. Choose 1 copy, or add a copy of the file as another model.");
+    // The other plates to print with this one; the plate itself doesn't count twice.
+    let also_plates: Vec<u32> = inspection.plates.iter().map(|p| p.index).filter(|i| *i != plate && opts.also_plates.contains(i)).collect();
+    if also_plates.len() < opts.also_plates.iter().filter(|p| **p != plate).count() {
+        bail!("one of the plates to combine doesn't exist");
     }
     // A project without filament information has no slots to add to.
     let mesh = inspection.kind == "mesh";
@@ -1035,12 +1037,12 @@ pub async fn slice(state: &Shared, id: &str, opts: SliceOptions) -> anyhow::Resu
     let expected_objects = match &keep {
         Some(k) => k.len() as u32,
         None => inspection.plates.iter().find(|p| p.index == plate).map(|p| p.object_count).unwrap_or(0),
-    };
+    } + inspection.plates.iter().filter(|p| also_plates.contains(&p.index)).map(|p| p.object_count).sum::<u32>();
     let st = state.clone();
     let id = id.to_string();
     let asked = SliceOptions { printer_id: Some(printer.id.clone()), plate: Some(plate), ..opts };
     tokio::spawn(async move {
-        if let Err(e) = run_slice(&st, &id, &input, &printer, plate, plan, &filaments, bed_type.as_deref(), keep, expected_objects, tweaks, &slice_extras, &merge).await {
+        if let Err(e) = run_slice(&st, &id, &input, &printer, plate, plan, &filaments, bed_type.as_deref(), keep, expected_objects, tweaks, &slice_extras, &merge, &also_plates).await {
             fail(&st, &id, &e).await;
             let _ = update_job(&st, &id, |j| j.auto_queue = false).await;
             return;
@@ -1135,6 +1137,7 @@ async fn run_slice(
     tweaks: crate::models::SliceTweaks,
     extras: &[SliceExtra],
     merge: &[u32],
+    also_plates: &[u32],
 ) -> anyhow::Result<()> {
     let mut plate = plate;
     let overrides = if matches!(plan, Plan::Presliced) { Vec::new() } else { tweaks.settings() };
@@ -1202,6 +1205,7 @@ async fn run_slice(
                     copies,
                     extras,
                     merge,
+                    also_plates,
                 })
                 .await;
             state.set_progress(id, None);
@@ -1231,9 +1235,9 @@ async fn run_slice(
             if let Some(p) = out.plate {
                 plate = p;
             }
-            if !extras.is_empty() {
+            if !extras.is_empty() || !also_plates.is_empty() {
                 // A mesh base counts as one object per copy.
-                let base = if mesh { copies } else { expected_objects };
+                let base = if mesh { copies } else { expected_objects * copies };
                 check_all_placed(&final_path, plate, base + out.extra_objects).await?;
             } else if copies > 1 {
                 check_copies(&final_path, plate, expected_objects.max(1), copies).await?;
@@ -1280,7 +1284,7 @@ async fn run_slice(
         );
         j.output_file = file_name;
         // Remember the result on the plate, for its card when choosing again.
-        if let Some(p) = j.inspection.as_mut().filter(|_| extras.is_empty()).and_then(|i| i.plates.iter_mut().find(|p| p.index == outcome.plate)) {
+        if let Some(p) = j.inspection.as_mut().filter(|_| extras.is_empty() && also_plates.is_empty()).and_then(|i| i.plates.iter_mut().find(|p| p.index == outcome.plate)) {
             p.prediction_secs = outcome.prediction_secs.or(p.prediction_secs);
             p.weight_g = outcome.weight_g.or(p.weight_g);
         }
@@ -2028,7 +2032,7 @@ pub async fn slice_all(state: &Shared, id: &str, opts: SliceOptions, plates: Opt
     if wanted.is_empty() {
         bail!("no plates to slice");
     }
-    if wanted.len() > 1 && !opts.extras.is_empty() {
+    if wanted.len() > 1 && (!opts.extras.is_empty() || !opts.also_plates.is_empty()) {
         bail!("Added models go on one plate. Queue one plate at a time, or remove them first.");
     }
     // Make sure a printer is known before creating copies.
@@ -2087,8 +2091,14 @@ fn job_plate(j: &Job) -> Option<u32> {
     // With added models the sliced file has one plate; the options say which it was.
     j.slice
         .as_ref()
-        .map(|s| s.options.as_ref().filter(|o| !o.extras.is_empty()).and_then(|o| o.plate).unwrap_or(s.plate))
+        .map(|s| s.options.as_ref().filter(|o| !o.extras.is_empty() || !o.also_plates.is_empty()).and_then(|o| o.plate).unwrap_or(s.plate))
         .or_else(|| j.auto_slice.as_ref().and_then(|o| o.plate))
+}
+
+/// Every plate a job prints, with the ones combined onto it.
+fn job_plates(j: &Job) -> Vec<u32> {
+    let also = j.slice.as_ref().and_then(|s| s.options.as_ref()).or(j.auto_slice.as_ref()).map(|o| o.also_plates.clone()).unwrap_or_default();
+    job_plate(j).into_iter().chain(also).collect()
 }
 
 /// For a job that went to the printer: the first plate of its file that no
@@ -2110,7 +2120,7 @@ pub async fn next_plate(state: &Shared, job: &Job) -> Option<PlateInfo> {
                         || (j.auto_queue && matches!(j.state, JobState::Ready | JobState::Slicing))
                         || matches!(j.state, JobState::Queued | JobState::Waiting | JobState::Uploading | JobState::Starting | JobState::Started | JobState::Finished)
                 })
-                .filter_map(job_plate)
+                .flat_map(job_plates)
                 .collect()
         })
         .await;
@@ -2156,6 +2166,7 @@ pub async fn queue_next_plate(state: &Shared, id: &str) -> anyhow::Result<Job> {
         bed_type: sliced.bed_type.clone(),
         tweaks: sliced.tweaks.clone(),
         extras: vec![],
+        also_plates: vec![],
     };
     let mut copy = new_job(job.source, job.model_url.clone(), job.model_id.clone(), job.model_title.clone(), job.model_cover.clone(), job.file.clone());
     copy.copied_from = Some(job.id.clone());
@@ -2424,7 +2435,7 @@ mod tests {
     fn insp(kind: &str, model: Option<&str>) -> Inspection {
         Inspection {
             kind: kind.into(),
-            plates: vec![PlateInfo { index: 1, name: None, has_thumbnail: false, object_count: 1, objects: vec![], prediction_secs: None, weight_g: None }],
+            plates: vec![PlateInfo { index: 1, name: None, has_thumbnail: false, object_count: 1, objects: vec![], prediction_secs: None, weight_g: None, filaments: None }],
             printer_model: model.map(str::to_string),
             ..Default::default()
         }

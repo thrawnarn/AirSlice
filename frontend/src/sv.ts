@@ -1,5 +1,12 @@
 // Swedish. Keys are the English text (see i18n.ts); missing keys show in English.
 export const sv: Record<string, string> = {
+  "Choose which one to add to the plate.": "Välj vilken som ska läggas på plattan.",
+  "Shows this plate only. Put together with others, the slicer lays out the whole plate again.": "Visar bara den här plattan. Tillsammans med andra lägger slicern upp hela plattan på nytt.",
+  "Printing {0} plates together": "Skriver ut {0} plattor tillsammans",
+  "Print other plates together with this one": "Skriv ut andra plattor tillsammans med den här",
+  "Everything goes on one build plate, arranged by the slicer.": "Allt hamnar på en byggplatta, placerat av slicern.",
+  "These plates use {0} of the file's {1} filaments.": "De här plattorna använder {0} av filens {1} filament.",
+  "This plate uses {0} of the file's {1} filaments.": "Den här plattan använder {0} av filens {1} filament.",
   "Files on this plate": "Filer på den här plattan",
   "What you set inside a file applies to that file only.": "Det du ställer in i en fil gäller bara den filen.",
   "Whole print": "Hela utskriften",
@@ -11,7 +18,6 @@ export const sv: Record<string, string> = {
   "Choose files": "Välj filer",
   "Upload 3MF or STL files": "Ladda upp 3MF- eller STL-filer",
   "Couldn't add {0}: {1}": "Kunde inte lägga till {0}: {1}",
-  "A 3MF can't have copies together with other files. To print it twice, add it again from History.": "En 3MF kan inte ha kopior tillsammans med andra filer. Lägg till den igen från Historik för att skriva ut den två gånger.",
   "Tap a file to choose its filament. That choice applies to that file only.": "Tryck på en fil för att välja dess filament. Valet gäller bara den filen.",
   "{0} g, shared": "{0} g, delas",
   "These numbers are for {0} colours, and these trays give {1}.": "Siffrorna gäller {0} färger, och de här facken ger {1}.",
@@ -32,7 +38,6 @@ export const sv: Record<string, string> = {
   "Link to the model to add": "Länk till modellen som ska läggas till",
   "Choose file": "Välj fil",
   "The slicer arranges everything on the plate. You'll see the result after slicing.": "Slicern placerar allt på plattan. Du ser resultatet efter slicningen.",
-  "Shows this model only. With added models, the slicer lays out the whole plate again.": "Visar bara den här modellen. Med tillagda modeller lägger slicern upp hela plattan på nytt.",
   "This file is already sliced. It will be sliced again together with the added models.": "Filen är redan slicad. Den slicas om tillsammans med de tillagda modellerna.",
   " (+{0} stopped)": " (+{0} stoppade)",
   " (fast)": " (snabb)",

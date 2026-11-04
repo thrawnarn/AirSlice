@@ -615,6 +615,18 @@ pub async fn thumbnail(
     Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "private, max-age=86400")], bytes))
 }
 
+/// A plate picture from an added model's file.
+pub async fn extra_thumbnail(State(state): State<Shared>, Path((id, extra, plate)): Path<(String, String, u32)>) -> ApiResult<impl IntoResponse> {
+    let job = jobs::get_job(&state, &id).await.ok_or_else(|| AppError::not_found("job not found"))?;
+    let extra = job.extras.iter().find(|e| e.id == extra).ok_or_else(|| AppError::not_found("that model isn't on this plate"))?;
+    let path = jobs::job_dir(&state, &id).join("extras").join(&extra.input_file);
+    let bytes = tokio::task::spawn_blocking(move || threemf::thumbnail(&path, plate))
+        .await
+        .map_err(|e| AppError::from(anyhow::anyhow!(e)))?
+        .map_err(|e| AppError::not_found(format!("{e:#}")))?;
+    Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "private, max-age=86400")], bytes))
+}
+
 /// One call from a link to a running print. Meant for Home Assistant and
 /// iOS Shortcuts; poll `GET /api/jobs/{id}` for progress.
 #[derive(Deserialize)]
@@ -682,6 +694,7 @@ pub async fn quick_print(State(state): State<Shared>, Json(body): Json<QuickPrin
         objects: body.objects,
         tweaks,
         extras: vec![],
+        also_plates: vec![],
     };
     let job = jobs::create(&state, &body.url, body.file_id.as_deref(), Some((slice, body.print.unwrap_or_default())))
         .await
@@ -822,7 +835,12 @@ pub async fn preview(
     let source = if use_sliced { "sliced" } else { "input" };
     let printer_key = printer.as_ref().map(|p| p.id.as_str()).unwrap_or("none");
     // v3: simplified meshes, packed positions, object ids (older caches are a different format).
-    let cache = dir.join(format!("preview-v3-{source}-{plate}-{printer_key}.json"));
+    // A new slice replaces the file under the same name, so the name of its cache says which one it is.
+    let stamp = match tokio::fs::metadata(&path).await.ok().and_then(|m| Some((m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs(), m.len()))) {
+        Some((at, len)) if use_sliced => format!("-{at}-{len}"),
+        _ => String::new(),
+    };
+    let cache = dir.join(format!("preview-v3-{source}-{plate}-{printer_key}{stamp}.json"));
     let bytes = match tokio::fs::read(&cache).await {
         Ok(b) => b,
         Err(_) => {
@@ -840,11 +858,21 @@ pub async fn preview(
                 AppError::new(axum::http::StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}"))
             })?;
             let b = serde_json::to_vec(&built).map_err(|e| AppError::from(anyhow::anyhow!(e)))?;
+            if use_sliced {
+                // Previews of earlier slices are of no more use.
+                if let Ok(mut list) = tokio::fs::read_dir(&dir).await {
+                    while let Ok(Some(f)) = list.next_entry().await {
+                        if f.file_name().to_string_lossy().starts_with("preview-v3-sliced-") {
+                            let _ = tokio::fs::remove_file(f.path()).await;
+                        }
+                    }
+                }
+            }
             let _ = tokio::fs::write(&cache, &b).await;
             b
         }
     };
-    Ok(([(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "private, max-age=600")], bytes).into_response())
+    Ok(([(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], bytes).into_response())
 }
 
 #[derive(Deserialize)]
