@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0
+
+- Add more models to a plate: on the slicing page, paste a link or choose a file, and set copies and a tray for each. OrcaSlicer arranges the plate and says so if everything doesn't fit.
+- The first model keeps its colours and settings. An added model prints in one colour, so a multi-colour one loses its colours, and a 3MF project as the first model can't have copies while models are added.
+
 ## 0.2.1
 
 - MakerWorld downloads work again. MakerWorld stopped sending a download link through the route AirSlice used, which showed up as "couldn't reach the file host".
