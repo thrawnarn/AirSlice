@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- "More models on this plate" is now a button that opens a dialog: paste a link or choose a file, pick from your MakerWorld collections, or pick an earlier model from History.
+
 ## 0.3.0
 
 - Add more models to a plate: on the slicing page, paste a link or choose a file, and set copies and a tray for each. OrcaSlicer arranges the plate and says so if everything doesn't fit.
