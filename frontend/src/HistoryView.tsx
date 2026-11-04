@@ -293,7 +293,7 @@ export function HistoryView({ printers, openJob }: { printers: Printer[] | null;
                   <div className="thumb-ph">{j.source === "external" ? "↗" : j.file.kind.toUpperCase()}</div>
                 )}
                 <div className="history-text">
-                  <div className="file-name ellipsis">{j.model_title}</div>
+                  <div className="file-name">{j.model_title}</div>
                   {j.source === "external" && <span className="tag external">{tr("Started outside AirSlice")}</span>}
                   <div className="file-meta">{bits.join(", ")}</div>
                   {j.state === "failed" && j.error && (

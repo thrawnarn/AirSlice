@@ -80,7 +80,7 @@ export function QueueBoard({ printers }: { printers: Printer[] | null }) {
                     <div className="thumb-ph">{i + 1}</div>
                   )}
                   <a href={`#/job/${q.job_id}`}>
-                    <div className="file-name ellipsis">
+                    <div className="file-name">
                       {i + 1}. {q.title}
                     </div>
                     {q.plate_label && <div className="file-meta ellipsis">{q.plate_label[0].toUpperCase() + q.plate_label.slice(1)}</div>}

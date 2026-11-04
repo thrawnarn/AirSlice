@@ -570,7 +570,7 @@ function AddModelSheet({ job, onAdded, onClose }: { job: Job; onAdded: (j: Job) 
                     <div className="thumb-ph">{j.file.kind.toUpperCase()}</div>
                   )}
                   <div className="history-text">
-                    <div className="file-name ellipsis">{j.model_title}</div>
+                    <div className="file-name">{j.model_title}</div>
                     <div className="file-meta ellipsis">{j.file.name}</div>
                   </div>
                 </button>
@@ -589,7 +589,7 @@ function FileCard({ title, cover, summary, open, onToggle, children }: { title: 
     <>
       {cover && <img className="extra-cover" src={remoteImg(cover)} alt="" loading="lazy" />}
       <span className="grow" style={{ minWidth: 0 }}>
-        <span className="ellipsis file-card-title">{title}</span>
+        <span className="file-card-title">{title}</span>
         {summary && !open && <span className="faint small ellipsis file-card-summary">{summary}</span>}
       </span>
       {onToggle && <span className="file-card-chevron" aria-hidden="true">{open ? "▾" : "▸"}</span>}
@@ -923,7 +923,7 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
               <div className="plate-img">
                 {p.has_thumbnail && <img src={`api/jobs/${job.id}/plates/${p.index}/thumbnail`} alt="" loading="lazy" />}
               </div>
-              <div className="plate-label ellipsis">{p.name ?? tr("Plate {0}", [p.index])}</div>
+              <div className="plate-label">{p.name ?? tr("Plate {0}", [p.index])}</div>
               {p.object_count > 0 && (
                 <div className="faint">{p.object_count === 1 ? tr("1 object") : `${p.object_count} objects`}</div>
               )}
