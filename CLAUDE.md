@@ -233,6 +233,7 @@ screenshots).
   plus any meshes, 3MF first; two 3MFs exit -4. So an added model always becomes meshes
   (`--export-stl`, files `stl/obj_<n>_…`, n = place in the 3dmodel's `<item>` order, which
   picks the plate's objects; loses colours and project settings; `--orient 1` only for bare meshes).
+  Refused project settings (-18) stop `--export-stl` and the combined export too, so both retry like slicing does.
   Mesh base: `--load-filament-ids 1,2,…` gives each input a filament. It's refused with a 3MF (-2).
   Project base: `threemf::single_plate` (only the chosen plate, as plate 1: `--arrange`
   gathers all plates onto one, and a later plate gives no G-code; the others must lose
@@ -242,8 +243,10 @@ screenshots).
   `--export-3mf --arrange 1` without filaments (they segfault here) → `set_object_slots`
   edits `extruder` by object name (`airslice-e<extra>_…`) → `--slice 1`. `--repetitions` fails
   on an export without slicing, so a project base has no copies with extras. Overflow: Orca
-  either moves objects to another plate (`check_all_placed` counts) or stops with "unprintable
-  area". The output has one plate: `slice.plate` is 1, `options.plate` is the file's plate.
+  moves objects to another plate (`check_all_placed` counts), or -102 "unprintable area", which
+  is also the prime tower growing off the bed (default y 220; cube + Benchy in two colours does it).
+  `wipe_tower_x/y` in process.json made no difference and re-exporting a mesh project segfaults, so -102 retries once with
+  `enable_prime_tower` 0, then says the models don't fit. The output has one plate: `slice.plate` is 1, `options.plate` is the file's plate.
 - Leaving objects out of a plate: remove only the plate's `<model_instance>` entries in
   model_settings.config (`threemf::keep_plate_objects`). Removing the `<item>` from the
   3dmodel build makes OrcaSlicer fail to load the file (-6). Copies + arrange keep the

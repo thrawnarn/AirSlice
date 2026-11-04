@@ -626,6 +626,25 @@ impl Slicer {
             }
         }
 
+        // Models added to a plate can make the prime tower too deep for where it
+        // stands (OrcaSlicer's -102). Filament changes still purge without it.
+        if !req.extras.is_empty() && run.error.as_deref().is_some_and(|e| e.contains(TOWER_OFF_BED)) {
+            match &process_path {
+                Some(p) => set_json_setting(p, PRIME_TOWER, "0").await?,
+                None => {
+                    let dest = req.work_dir.join("input-no-tower.3mf");
+                    let src = PathBuf::from(args.last().cloned().unwrap_or_default());
+                    let (d, set) = (dest.clone(), vec![(PRIME_TOWER.to_string(), "0".to_string())]);
+                    tokio::task::spawn_blocking(move || crate::threemf::edit_settings(&src, &d, &[], &set)).await??;
+                    *args.last_mut().unwrap() = dest.to_string_lossy().into_owned();
+                }
+            }
+            reset_dir(&out_dir).await?;
+            tracing::info!("retrying without a prime tower");
+            run = self.run(&args, req.work_dir, &out_dir, req.progress).await?;
+            notes.push("sliced without a prime tower: it didn't fit on the plate with these models".to_string());
+        }
+
         let Run { status, text, log_tail, error, output } = run;
         match (status.success(), output, error) {
             (true, Some(output), None) => Ok(SliceOutput {
@@ -636,8 +655,8 @@ impl Slicer {
                 plate: (!req.extras.is_empty()).then_some(plate),
                 extra_objects,
             }),
-            // With everything arranged by OrcaSlicer, this means the plate overflowed.
-            (_, _, Some(err)) if !req.extras.is_empty() && err.contains("unprintable area") => {
+            // Still off the bed without a tower: the models themselves don't fit.
+            (_, _, Some(err)) if !req.extras.is_empty() && err.contains(TOWER_OFF_BED) => {
                 bail!("The models don't all fit on the plate. Remove a model or lower the copies, and slice again.")
             }
             (_, _, Some(_)) if refused_filament(&text).is_some() => {
@@ -655,13 +674,30 @@ impl Slicer {
 
     /// One STL per object of the file (`obj_<number>_…`), by number.
     async fn export_stl(&self, input: &Path, dir: &Path, work_dir: &Path, settings: &[String], shape: &[String]) -> anyhow::Result<Vec<(usize, PathBuf)>> {
-        reset_dir(dir).await?;
-        let mut args = vec!["--export-stl".to_string()];
-        args.extend(shape.iter().cloned());
-        args.extend(settings.iter().cloned());
-        args.extend(["--allow-newer-file".into(), "--outputdir".into(), dir.to_string_lossy().into_owned()]);
-        args.push(input.to_string_lossy().into_owned());
-        let run = self.run(&args, work_dir, dir, None).await?;
+        let mut input = input.to_path_buf();
+        let mut run = None;
+        // Project settings OrcaSlicer refuses stop it here too, though a mesh doesn't need them.
+        for attempt in 0..2 {
+            reset_dir(dir).await?;
+            let mut args = vec!["--export-stl".to_string()];
+            args.extend(shape.iter().cloned());
+            args.extend(settings.iter().cloned());
+            args.extend(["--allow-newer-file".into(), "--outputdir".into(), dir.to_string_lossy().into_owned()]);
+            args.push(input.to_string_lossy().into_owned());
+            let done = self.run(&args, work_dir, dir, None).await?;
+            let keys = crate::threemf::rejected_settings(&done.text);
+            if done.error.is_some() && attempt == 0 && is_3mf(&input) && !keys.is_empty() {
+                let fixed = dir.with_extension("orca.3mf");
+                tracing::info!("retrying without settings OrcaSlicer refused: {}", keys.join(", "));
+                let (src, dest) = (input.clone(), fixed.clone());
+                tokio::task::spawn_blocking(move || crate::threemf::edit_settings(&src, &dest, &keys, &[])).await??;
+                input = fixed;
+                continue;
+            }
+            run = Some(done);
+            break;
+        }
+        let run = run.ok_or_else(|| anyhow!("OrcaSlicer couldn't read the file"))?;
         let mut files = Vec::new();
         if let Ok(mut list) = tokio::fs::read_dir(dir.join("stl")).await {
             while let Some(f) = list.next_entry().await? {
@@ -934,6 +970,9 @@ impl Transform {
 }
 
 const BED_TYPE: &str = "curr_bed_type";
+const PRIME_TOWER: &str = "enable_prime_tower";
+/// Part of OrcaSlicer's error for G-code outside the bed.
+const TOWER_OFF_BED: &str = "unprintable area";
 /// OrcaSlicer's plate when nothing says otherwise.
 const DEFAULT_PLATE: &str = "Cool Plate";
 /// The last complete progress line OrcaSlicer wrote, e.g.
