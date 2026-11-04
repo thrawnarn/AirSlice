@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.3
+
+- Upload several files at once, on the start page or when adding to a plate.
+- Each file on a plate has its own card with what applies to it alone, and everything else is under "Whole print", both before and after slicing.
+- Filaments printing from the same tray are now merged when slicing, so a print no longer purges and changes filament between them. Time and filament use drop to match. This changes what the printer does, so try a small print first.
+- After slicing, choosing trays that give another number of colours slices again by itself. Choosing another tray with the same number of colours updates the cost straight away, using the spool's price from Spoolman.
+
 ## 0.3.2
 
 - Fixed "couldn't read the added model" for 3MF files from Bambu Studio with settings OrcaSlicer refuses.
