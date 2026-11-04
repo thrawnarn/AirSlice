@@ -63,6 +63,8 @@ pub fn router(state: Shared) -> Router<Shared> {
             post(jobs::upload).layer(axum::extract::DefaultBodyLimit::max(crate::sources::MAX_DOWNLOAD as usize)),
         )
         .route("/jobs/next-plate", get(jobs::next_plate_suggestion))
+        .route("/jobs/{id}/slice-with-trays", post(jobs::slice_with_trays))
+        .route("/jobs/{id}/cost-with-trays", post(jobs::cost_with_trays))
         .route("/jobs/{id}/extras", post(jobs::add_extra))
         .route("/jobs/{id}/extras/from-job", post(jobs::add_extra_from_job))
         .route(

@@ -316,6 +316,28 @@ pub async fn reslice(State(state): State<Shared>, Path(id): Path<String>) -> Api
     Ok(Json(view(&state, job).await))
 }
 
+#[derive(Deserialize)]
+pub struct TraysBody {
+    ams_mapping: Vec<i32>,
+}
+
+/// Slice a sliced job again with the trays now chosen.
+pub async fn slice_with_trays(State(state): State<Shared>, Path(id): Path<String>, Json(body): Json<TraysBody>) -> ApiResult<Json<JobView>> {
+    let job = jobs::slice_with_trays(&state, &id, &body.ams_mapping).await.map_err(bad)?;
+    Ok(Json(view(&state, job).await))
+}
+
+/// The cost of a sliced job with other trays, which needs no new slice.
+pub async fn cost_with_trays(State(state): State<Shared>, Path(id): Path<String>, Json(body): Json<TraysBody>) -> ApiResult<Json<Option<crate::models::Cost>>> {
+    let job = jobs::get_job(&state, &id).await.ok_or_else(|| AppError::not_found("job not found"))?;
+    let slice = job.slice.ok_or_else(|| AppError::bad_request("this job isn't sliced"))?;
+    let costs = state.store.read(|d| d.cost.clone()).await;
+    let use_g = crate::spoolman::use_per_tray(&slice.filaments, &body.ams_mapping, 1.0);
+    let hours = slice.prediction_secs.map(|s| s as f64 / 3600.0);
+    let prices = crate::spoolman::prices_for_printer(&state, &slice.printer_id).await;
+    Ok(Json(crate::spoolman::cost(&use_g, &prices, hours, &costs, false)))
+}
+
 // ------------------------------------------------------------------ queue
 
 #[derive(Serialize)]

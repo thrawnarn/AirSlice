@@ -1,5 +1,7 @@
 // Swedish. Keys are the English text (see i18n.ts); missing keys show in English.
 export const sv: Record<string, string> = {
+  "These numbers are for {0} colours, and these trays give {1}.": "Siffrorna gäller {0} färger, och de här facken ger {1}.",
+  "Slice again for these trays": "Slica om för de här facken",
   "Link": "Länk",
   "Collections": "Samlingar",
   "Add a model": "Lägg till en modell",

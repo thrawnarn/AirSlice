@@ -661,6 +661,66 @@ fn extra_slots(base_trays: &[i32], base_slots: usize, trays: &[Option<i32>]) -> 
     (slots, new)
 }
 
+/// When slots print from one tray: the slot each one becomes (the first with
+/// that tray). Empty when every tray is used once. Slots without a tray stay.
+fn merged_slots(trays: &[i32]) -> Vec<u32> {
+    let map: Vec<u32> = trays
+        .iter()
+        .enumerate()
+        .map(|(i, t)| if *t < 0 { i as u32 + 1 } else { trays.iter().position(|o| o == t).unwrap_or(i) as u32 + 1 })
+        .collect();
+    if map.iter().enumerate().any(|(i, s)| *s != i as u32 + 1) { map } else { Vec::new() }
+}
+
+/// Slice a sliced job again with the trays chosen for it after all, so its
+/// time, filament and cost fit them.
+pub async fn slice_with_trays(state: &Shared, id: &str, mapping: &[i32]) -> anyhow::Result<Job> {
+    let job = get_job(state, id).await.ok_or_else(|| anyhow!("job not found"))?;
+    let sliced = job.slice.clone().ok_or_else(|| anyhow!("this job isn't sliced"))?;
+    let inspection = job.inspection.clone().ok_or_else(|| anyhow!("this job has no file"))?;
+    if sliced.settings == "presliced" {
+        bail!("This file came sliced, so its numbers come from the file. Use “Change plate or settings” to slice it again.");
+    }
+    let asked = sliced.options.clone().unwrap_or_else(|| SliceOptions {
+        printer_id: Some(sliced.printer_id.clone()),
+        plate: Some(sliced.plate),
+        settings: Some(sliced.settings.clone()),
+        transform: sliced.transform.clone().unwrap_or_default(),
+        bed_type: sliced.bed_type.clone(),
+        tweaks: sliced.tweaks.clone(),
+        ..Default::default()
+    });
+    let mesh = inspection.kind == "mesh";
+    let base_slots = if mesh { 1 } else { inspection.filaments.len() };
+    // Added models keep their slot; only the tray behind it changes.
+    let old_base: Vec<i32> = asked.tray_ids.clone().or_else(|| asked.tray_id.map(|t| vec![t])).unwrap_or_default();
+    let old_trays: Vec<Option<i32>> = asked.extras.iter().map(|e| e.tray_id.filter(|_| base_slots > 0)).collect();
+    let (slots, _) = extra_slots(&old_base, base_slots, &old_trays);
+    let extras = asked
+        .extras
+        .iter()
+        .zip(&slots)
+        .map(|(e, slot)| ExtraChoice { tray_id: mapping.get(*slot as usize - 1).copied().filter(|t| *t >= 0), ..e.clone() })
+        .collect();
+    // Slots merged last time aren't listed for choosing: they follow the slot they became.
+    let merged = merged_slots(&old_base);
+    let base: Vec<i32> = (0..base_slots)
+        .map(|i| match (mapping.get(i).copied().unwrap_or(-1), merged.get(i)) {
+            (t, Some(to)) if t < 0 => mapping.get(*to as usize - 1).copied().unwrap_or(-1),
+            (t, _) => t,
+        })
+        .collect();
+    let opts = SliceOptions {
+        tray_id: if mesh { base.first().copied().filter(|t| *t >= 0) } else { None },
+        tray_ids: if mesh { None } else { Some(base) },
+        // The chosen tray's own profile, as when picking it before slicing.
+        filament_profile: None,
+        extras,
+        ..asked
+    };
+    slice(state, id, opts).await
+}
+
 /// The added models a slice asks for, checked.
 fn chosen_extras(job: &Job, opts: &SliceOptions) -> anyhow::Result<Vec<(PlateExtra, ExtraChoice)>> {
     let mut out = Vec::new();
@@ -879,6 +939,7 @@ pub async fn slice(state: &Shared, id: &str, opts: SliceOptions) -> anyhow::Resu
         (Some(t), _) => (t.filaments, Some(t.preferred), t.note),
         (None, _) => (Vec::new(), None, String::new()),
     };
+    let merge = merged_slots(preferred_trays.as_deref().unwrap_or(&[]));
     let filament_used = match &plan {
         Plan::Printer { filament, arrange: true, .. } => filaments.first().map(|f| f.profile.clone()).or(filament.clone()),
         _ => None,
@@ -954,7 +1015,7 @@ pub async fn slice(state: &Shared, id: &str, opts: SliceOptions) -> anyhow::Resu
     let id = id.to_string();
     let asked = SliceOptions { printer_id: Some(printer.id.clone()), plate: Some(plate), ..opts };
     tokio::spawn(async move {
-        if let Err(e) = run_slice(&st, &id, &input, &printer, plate, plan, &filaments, bed_type.as_deref(), keep, expected_objects, tweaks, &slice_extras).await {
+        if let Err(e) = run_slice(&st, &id, &input, &printer, plate, plan, &filaments, bed_type.as_deref(), keep, expected_objects, tweaks, &slice_extras, &merge).await {
             fail(&st, &id, &e).await;
             let _ = update_job(&st, &id, |j| j.auto_queue = false).await;
             return;
@@ -1047,6 +1108,7 @@ async fn run_slice(
     expected_objects: u32,
     tweaks: crate::models::SliceTweaks,
     extras: &[SliceExtra],
+    merge: &[u32],
 ) -> anyhow::Result<()> {
     let mut plate = plate;
     let overrides = if matches!(plan, Plan::Presliced) { Vec::new() } else { tweaks.settings() };
@@ -1113,6 +1175,7 @@ async fn run_slice(
                     rotate_z: transform.rotation(),
                     copies,
                     extras,
+                    merge,
                 })
                 .await;
             state.set_progress(id, None);
@@ -2241,6 +2304,17 @@ mod tests {
         left.sort();
         assert_eq!(left, ["new", "week"]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn merges_slots_on_one_tray() {
+        assert_eq!(merged_slots(&[0, 1, 0, 1]), [1, 2, 1, 2]);
+        assert_eq!(merged_slots(&[2, 2, 2]), [1, 1, 1]);
+        // No tray chosen isn't "the same tray".
+        assert_eq!(merged_slots(&[-1, -1, 3, 3]), [1, 2, 3, 3]);
+        assert!(merged_slots(&[0, 1, 2]).is_empty());
+        assert!(merged_slots(&[-1, -1]).is_empty());
+        assert!(merged_slots(&[]).is_empty());
     }
 
     #[test]

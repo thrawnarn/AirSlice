@@ -354,6 +354,9 @@ pub struct SliceRequest<'a> {
     pub copies: u32,
     /// Other models to arrange on the plate with this one.
     pub extras: &'a [SliceExtra],
+    /// Filament slots that print from one tray: the slot each one becomes.
+    /// Empty when none do.
+    pub merge: &'a [u32],
 }
 
 /// A model added to the plate.
@@ -536,6 +539,12 @@ impl Slicer {
         }
 
         let profile_args: Vec<String> = settings_args.iter().chain(&filament_args).cloned().collect();
+        if !req.merge.is_empty() && is_3mf(&input) {
+            let dest = req.work_dir.join("input-merged.3mf");
+            let (src, d, map) = (input.clone(), dest.clone(), req.merge.to_vec());
+            tokio::task::spawn_blocking(move || crate::threemf::merge_filaments(&src, &d, &map)).await??;
+            input = dest;
+        }
         let mesh = !is_3mf(req.input);
         let mut transform = Transform::of(&req);
         let mut plate = req.plate;
@@ -1101,6 +1110,7 @@ mod tests {
             rotate_z: Some(90.0),
             copies: 3,
             extras: &[],
+            merge: &[],
         };
         assert_eq!(
             Transform::of(&base).args().join(" "),

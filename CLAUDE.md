@@ -247,6 +247,14 @@ screenshots).
   is also the prime tower growing off the bed (default y 220; cube + Benchy in two colours does it).
   `wipe_tower_x/y` in process.json made no difference and re-exporting a mesh project segfaults, so -102 retries once with
   `enable_prime_tower` 0, then says the models don't fit. The output has one plate: `slice.plate` is 1, `options.plate` is the file's plate.
+- Several filaments on one tray: re-slicing with the same colours changes nothing, since Orca's CLI
+  keeps the project's `flush_volumes_matrix` and still changes tool (t-rex plate: 132 g, 10.2 h,
+  255 changes at any colours; zeroing the matrix alone 52 g, 8 h, 223 changes). `jobs::merged_slots` +
+  `threemf::merge_filaments` move `extruder` values and layer changes to the first slot on that tray and
+  zero the matrix between them. Painted triangles keep their slot (not remapped), so they change without
+  purging. Colours chosen after slicing: another colour count re-slices (`POST jobs/{id}/slice-with-trays`,
+  added models keep their slot's new tray); same count only updates `cost-with-trays`, as the matrix
+  isn't recalculated for new colours anyway.
 - Leaving objects out of a plate: remove only the plate's `<model_instance>` entries in
   model_settings.config (`threemf::keep_plate_objects`). Removing the `<item>` from the
   3dmodel build makes OrcaSlicer fail to load the file (-6). Copies + arrange keep the

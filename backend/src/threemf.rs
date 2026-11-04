@@ -455,6 +455,38 @@ fn pad_filaments(v: &mut serde_json::Value, extra: usize) {
     }
 }
 
+/// Copies the project with filament slots merged, `map[slot - 1]` being the slot
+/// each one becomes: for several slots printing from one tray. Objects, parts and
+/// layer changes move to the merged slot, and nothing is purged between merged
+/// slots. Painted triangles keep their slot, so those still change filament, but
+/// without purging.
+pub fn merge_filaments(src: &Path, dest: &Path, map: &[u32]) -> anyhow::Result<()> {
+    let slot_of = |old: &str| old.parse::<usize>().ok().and_then(|s| s.checked_sub(1)).and_then(|i| map.get(i)).map(u32::to_string).unwrap_or_else(|| old.to_string());
+    let extruder = regex::Regex::new(r#"(<metadata key="extruder" value=")(\d+)"#)?;
+    let layer_change = regex::Regex::new(r#"(\bextruder=")(\d+)"#)?;
+    rewrite(src, dest, &[MODEL_SETTINGS, PROJECT_SETTINGS, CUSTOM_GCODE], |name, text| {
+        Ok(match name {
+            MODEL_SETTINGS => extruder.replace_all(&text, |c: &regex::Captures| format!("{}{}", &c[1], slot_of(&c[2]))).into_owned().into_bytes(),
+            CUSTOM_GCODE => layer_change.replace_all(&text, |c: &regex::Captures| format!("{}{}", &c[1], slot_of(&c[2]))).into_owned().into_bytes(),
+            _ => {
+                let mut v: serde_json::Value = serde_json::from_str(&text).context("reading project settings")?;
+                if let Some(list) = v.get_mut("flush_volumes_matrix").and_then(|m| m.as_array_mut())
+                    && list.len() == map.len() * map.len() {
+                        let n = map.len();
+                        for row in 0..n {
+                            for col in 0..n {
+                                if map[row] == map[col] {
+                                    list[row * n + col] = serde_json::Value::String("0".into());
+                                }
+                            }
+                        }
+                    }
+                serde_json::to_vec_pretty(&v)?
+            }
+        })
+    })
+}
+
 /// Flush volume in mm³ between a new filament and any other.
 const DEFAULT_FLUSH: &str = "280";
 const DEFAULT_FLUSH_MULTIPLIER: &str = "140";
@@ -499,6 +531,7 @@ pub fn plate_object_numbers(path: &Path, plate: u32) -> Option<Vec<usize>> {
 }
 
 const PROJECT_SETTINGS: &str = "Metadata/project_settings.config";
+const CUSTOM_GCODE: &str = "Metadata/custom_gcode_per_layer.xml";
 const MODEL_SETTINGS: &str = "Metadata/model_settings.config";
 
 /// Copies a 3MF, passing the named text entries through `edit`; everything
@@ -623,6 +656,29 @@ pub mod tests {
         // A printer's settings aren't per filament, even at the same length.
         assert_eq!(list("nozzle_diameter").len(), 2);
         assert_eq!(list("printable_area").len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merges_filaments() {
+        let dir = std::env::temp_dir().join(format!("as-3mf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (src, dest) = (dir.join("a.3mf"), dir.join("b.3mf"));
+        let settings = r#"<object id="1"><metadata key="extruder" value="2"/><part id="1"><metadata key="extruder" value="3"/></part></object>"#;
+        let layers = r##"<layer top_z="1" type="2" extruder="3" color="#111111"/>"##;
+        let project = serde_json::json!({"flush_volumes_matrix": ["0","1","2", "3","0","4", "5","6","0"]});
+        make_3mf(&src, &[
+            ("Metadata/model_settings.config", settings.as_bytes()),
+            ("Metadata/custom_gcode_per_layer.xml", layers.as_bytes()),
+            ("Metadata/project_settings.config", project.to_string().as_bytes()),
+        ]);
+        merge_filaments(&src, &dest, &[1, 1, 3]).unwrap();
+        let s = entry(&dest, super::MODEL_SETTINGS);
+        assert!(s.contains(r#"<object id="1"><metadata key="extruder" value="1"/>"#) && s.contains(r#"<part id="1"><metadata key="extruder" value="3"/>"#));
+        assert!(entry(&dest, CUSTOM_GCODE).contains(r#"extruder="3""#));
+        let v: serde_json::Value = serde_json::from_str(&entry(&dest, PROJECT_SETTINGS)).unwrap();
+        // Slots 1 and 2 are one now; 3 still purges from and to them.
+        assert_eq!(v["flush_volumes_matrix"], serde_json::json!(["0","0","2", "0","0","4", "5","6","0"]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

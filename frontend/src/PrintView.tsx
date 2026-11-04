@@ -1108,6 +1108,15 @@ function PrintOptions({ job, printers, onChange }: { job: Job; printers: Printer
 
   const used = slice.filaments;
   const totalG = used.reduce((s, f) => s + f.used_g, 0);
+  // Colours as sliced, and with the trays now chosen. Filaments on one tray are
+  // merged when slicing, which is what changes time and filament.
+  const trayCount = (ids: (number | undefined)[]) => new Set(ids.map((t, i) => (t != null && t >= 0 ? `t${t}` : `f${i}`))).size;
+  const slicedColours = slice.preferred_trays?.length ? trayCount(used.map((f) => slice.preferred_trays![f.id - 1])) : used.length;
+  const chosenColours = mapping ? trayCount(used.map((f) => mapping[f.id - 1])) : slicedColours;
+  const canReslice = slice.settings !== "presliced" && !job.files_removed;
+  const colourCountChanged = canReslice && used.length > 0 && chosenColours !== slicedColours;
+  const [cost, setCost] = useState(job.cost_estimate ?? null);
+  useEffect(() => setCost(job.cost_estimate ?? null), [job.cost_estimate]);
   // Spools that don't hold enough for this print (Spoolman).
   const short = used.flatMap((f) => {
     const tray = mapping?.[f.id - 1];
@@ -1169,6 +1178,20 @@ function PrintOptions({ job, printers, onChange }: { job: Job; printers: Printer
     run(() => api.post<Job>(`jobs/${job.id}/print`, body()), offline ? tr("Will send when {0} is back", [printer?.name ?? tr("the printer")]) : tr("Sending to the printer"));
   const addToQueue = () => run(() => api.post<Job>(`jobs/${job.id}/queue`, body()), tr("Added to the queue"));
   const changeSettings = () => run(() => api.post<Job>(`jobs/${job.id}/reslice`));
+  const sliceForTrays = (ids: number[]) => run(() => api.post<Job>(`jobs/${job.id}/slice-with-trays`, { ams_mapping: ids }));
+  /** A person picked another tray. */
+  function pickTray(filament: number, id: number) {
+    const next = [...(mapping ?? Array(slice.filament_slots).fill(-1))];
+    next[filament - 1] = id;
+    setMapping(next);
+    setMappingTouched(true);
+    // Another number of colours changes the time and filament: slice for it.
+    if (canReslice && trayCount(used.map((f) => next[f.id - 1])) !== slicedColours) {
+      void sliceForTrays(next);
+      return;
+    }
+    api.post<Job["cost_estimate"]>(`jobs/${job.id}/cost-with-trays`, { ams_mapping: next }).then((c) => setCost(c ?? null)).catch(() => undefined);
+  }
 
   return (
     <section>
@@ -1195,12 +1218,12 @@ function PrintOptions({ job, printers, onChange }: { job: Job; printers: Printer
           <span>{tr("filament")}</span>
         </div>
         <div className="fact">
-          <b>{used.length || 1}</b>
-          <span>{used.length === 1 ? tr("colour") : tr("colours")}</span>
+          <b>{chosenColours || 1}</b>
+          <span>{chosenColours === 1 ? tr("colour") : tr("colours")}</span>
         </div>
-        {job.cost_estimate && (
-          <div className="fact" title={costTitle(job.cost_estimate)}>
-            <b>≈ {money(job.cost_estimate)}</b>
+        {cost && (
+          <div className="fact" title={costTitle(cost)}>
+            <b>≈ {money(cost)}</b>
             <span>{tr("cost")}</span>
           </div>
         )}
@@ -1210,6 +1233,14 @@ function PrintOptions({ job, printers, onChange }: { job: Job; printers: Printer
           {w}
         </Notice>
       ))}
+      {colourCountChanged && !busy && mapping && (
+        <Notice tone="warn">
+          {tr("These numbers are for {0} colours, and these trays give {1}.", [slicedColours, chosenColours])}{" "}
+          <button type="button" className="linkish" onClick={() => void sliceForTrays(mapping)}>
+            {tr("Slice again for these trays")}
+          </button>
+        </Notice>
+      )}
 
       {slice.transform && <p className="faint">{describeTransform(slice.transform)}</p>}
       {slice.tweaks && Object.keys(slice.tweaks).length > 0 && <p className="faint">{tr("Changed settings: {0}.", [describeTweaks(slice.tweaks)])}</p>}
@@ -1243,12 +1274,7 @@ function PrintOptions({ job, printers, onChange }: { job: Job; printers: Printer
                     title={tr("Tray for filament {0} ({1})", [f.id, f.type])}
                     trays={trays}
                     value={mapping?.[f.id - 1] ?? -1}
-                    onChange={(id) => {
-                      const next = [...(mapping ?? Array(slice.filament_slots).fill(-1))];
-                      next[f.id - 1] = id;
-                      setMapping(next);
-                      setMappingTouched(true);
-                    }}
+                    onChange={(id) => pickTray(f.id, id)}
                     extra={trays.some((x) => x.id === 254) ? [] : [{ id: 254, label: tr("External spool") }]}
                     onManage={printer ? () => setShowTrays(true) : undefined}
                     spools={job.spools}
