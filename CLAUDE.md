@@ -121,9 +121,14 @@ screenshots).
 - Connection test (`PrinterManager::commands_refused`): re-sends the chamber light's
   current mode and watches 4 s for HMS 0500_0500_0001_0007 (Developer Mode off).
   Unverified against a refusing printer; it only ever adds a warning.
-- MakerWorld download: design → `modelId` (alphanumeric) → `GET
-  api.bambulab.com/v1/iot-service/api/user/profile/{profileId}?model_id=…` with Bearer
-  token → presigned URL, fetch as-is (re-encoding breaks the signature). HTTP 418 = CAPTCHA.
+- MakerWorld download: `GET api.bambulab.com/v1/design-service/design/{id}` → the
+  `instances[]` entry with this `profileId` → `GET
+  /v1/design-service/instance/{instance id}/f3mf?type=download` with Bearer token →
+  `{name, url}`, presigned, fetch as-is (re-encoding breaks the signature). HTTP 418 =
+  CAPTCHA. The older `/v1/iot-service/api/user/profile/{profileId}?model_id={modelId}`
+  answered 200 "success" with `url: ""` on 2026-11-04 (three models checked); it's only
+  the fallback now. An empty string makes reqwest fail with `builder error`, before
+  anything is sent.
 - Thingiverse (`sources/thingiverse.rs`): anonymous downloads and the API answer 403
   from a server (checked 2026-10-29), so it needs an app token from
   thingiverse.com/developers (`Data::thingiverse_token`). `GET /things/{id}`,

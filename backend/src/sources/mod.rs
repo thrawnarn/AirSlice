@@ -99,7 +99,12 @@ pub fn parse_link(input: &str) -> anyhow::Result<ParsedLink> {
 pub async fn download_to(client: &reqwest::Client, url: &str, dest: &Path) -> anyhow::Result<u64> {
     let resp = client.get(url).send().await.map_err(|e| {
         tracing::warn!("download failed: {e:#}");
-        anyhow!("Download failed — couldn't reach the file host.")
+        // A builder error means nothing was sent: the link itself is unusable.
+        if e.is_builder() {
+            anyhow!("Download failed — the model site gave an unusable download link.")
+        } else {
+            anyhow!("Download failed — couldn't reach the file host.")
+        }
     })?;
     if !resp.status().is_success() {
         bail!("download failed: HTTP {}", resp.status());

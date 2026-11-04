@@ -474,7 +474,7 @@ async fn download(state: &Shared, id: &str, model: &ResolvedModel, file: &ModelF
             let token = state.store.read(|d| d.bambu.token.clone()).await.ok_or_else(|| anyhow!("Bambu account not linked"))?;
             let internal = model.internal_id.as_deref().ok_or_else(|| anyhow!("MakerWorld did not return the model id"))?;
             let china = model.url.contains(".cn/");
-            makerworld::download(&state.http, china, internal, &file.id, &token, &dest).await?.0
+            makerworld::download(&state.http, china, &model.model_id, internal, &file.id, &token, &dest).await?.0
         }
         Source::Printables => {
             let url = printables::download_url(&state.http, &model.model_id, file).await?;

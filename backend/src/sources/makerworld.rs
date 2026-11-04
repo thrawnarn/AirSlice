@@ -346,26 +346,55 @@ fn details(d: &Value) -> crate::models::ModelDetails {
     }
 }
 
-/// Download a print profile's 3MF.
+/// The instance id behind a print profile, from a design's `instances`.
+/// Jobs store the profile id only.
+fn instance_id(design: &Value, profile_id: &str) -> Option<String> {
+    design
+        .get("instances")?
+        .as_array()?
+        .iter()
+        .find(|i| s(i.get("profileId")).as_deref() == Some(profile_id))
+        .and_then(|i| s(i.get("id")))
+}
+
+/// The signed link in a download answer. The API can answer "success" with an
+/// empty `url`, which counts as no link.
+fn signed_url(manifest: &Value) -> Option<&str> {
+    manifest.get("url").and_then(|u| u.as_str()).filter(|u| !u.trim().is_empty())
+}
+
+/// Download a print profile's 3MF. `instance/{id}/f3mf` is the current route;
+/// `iot-service` answers with an empty `url` since 2026-11, kept as a fallback
+/// because the route is unconfirmed on api.bambulab.cn.
 pub async fn download(
     client: &reqwest::Client,
     china: bool,
+    design_id: &str,
     internal_model_id: &str,
     profile_id: &str,
     token: &str,
     dest: &Path,
 ) -> anyhow::Result<(u64, Option<String>)> {
-    let url = format!(
-        "{}/v1/iot-service/api/user/profile/{}?model_id={}",
-        api_base(china),
-        profile_id,
-        urlencode(internal_model_id)
-    );
-    let manifest = get_json(client, &url, Some(token)).await?;
-    let signed = manifest
-        .get("url")
-        .and_then(|u| u.as_str())
-        .ok_or_else(|| anyhow!("MakerWorld did not return a download link"))?;
+    let base = api_base(china);
+    let design = get_json(client, &format!("{base}/v1/design-service/design/{design_id}"), Some(token)).await?;
+    let mut manifest = None;
+    if let Some(instance) = instance_id(&design, profile_id) {
+        let url = format!("{base}/v1/design-service/instance/{instance}/f3mf?type=download");
+        match get_json(client, &url, Some(token)).await {
+            Ok(m) if signed_url(&m).is_some() => manifest = Some(m),
+            Ok(_) => tracing::warn!("MakerWorld f3mf gave no link for instance {instance}"),
+            Err(e) => tracing::warn!("MakerWorld f3mf failed for instance {instance}: {e:#}"),
+        }
+    }
+    let manifest = match manifest {
+        Some(m) => m,
+        None => {
+            let url = format!("{base}/v1/iot-service/api/user/profile/{profile_id}?model_id={}", urlencode(internal_model_id));
+            get_json(client, &url, Some(token)).await?
+        }
+    };
+    let signed = signed_url(&manifest)
+        .ok_or_else(|| anyhow!("MakerWorld didn't give a download link for this profile. Try another profile, or try again later."))?;
     // The signed CDN link is used as-is; re-encoding it breaks the signature.
     let size = super::download_to(client, signed, dest).await?;
     Ok((size, manifest.get("name").and_then(|n| n.as_str()).map(str::to_string)))
@@ -378,6 +407,28 @@ fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_the_instance_of_a_profile() {
+        let d = serde_json::json!({"instances": [
+            {"id": 1, "profileId": 10},
+            {"id": 2, "profileId": "20"},
+            {"profileId": 30},
+        ]});
+        assert_eq!(instance_id(&d, "10").as_deref(), Some("1"));
+        assert_eq!(instance_id(&d, "20").as_deref(), Some("2"));
+        assert_eq!(instance_id(&d, "30"), None);
+        assert_eq!(instance_id(&d, "40"), None);
+        assert_eq!(instance_id(&serde_json::json!({}), "10"), None);
+    }
+
+    #[test]
+    fn an_empty_link_is_no_link() {
+        assert_eq!(signed_url(&serde_json::json!({"url": "https://x/y.3mf?sig=1"})), Some("https://x/y.3mf?sig=1"));
+        assert_eq!(signed_url(&serde_json::json!({"url": "", "message": "success"})), None);
+        assert_eq!(signed_url(&serde_json::json!({"url": null})), None);
+        assert_eq!(signed_url(&serde_json::json!({})), None);
+    }
 
     #[test]
     fn pictures_get_a_browser_friendly_form() {
