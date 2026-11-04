@@ -606,6 +606,9 @@ pub struct SliceOutcome {
     /// What was asked for, to slice the same again for another printer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<SliceOptions>,
+    /// The files on the plate, when models were added.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<SlicedFile>,
     #[serde(skip)]
     pub output_path: PathBuf,
 }
@@ -812,6 +815,20 @@ pub struct ExtraChoice {
     /// Tray to print it from (global tray id); the first filament when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tray_id: Option<i32>,
+}
+
+/// One file in a slice and the filament slots it prints with. Slots can be
+/// shared between files that use the same tray.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SlicedFile {
+    /// The added model's id; `None` for the job's own file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover: Option<String>,
+    pub slots: Vec<u32>,
+    pub copies: u32,
 }
 
 /// A model added to a job's plate, kept in the job's `extras/` folder.

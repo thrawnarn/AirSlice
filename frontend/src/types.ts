@@ -166,8 +166,10 @@ export interface SlicedFilament {
 }
 
 export interface SliceOutcome {
+  /** The files on the plate, when models were added. */
+  files?: SlicedFile[];
   /** What was asked for; added models are in here. */
-  options?: { extras?: { id: string; copies?: number | null; plate?: number | null; tray_id?: number | null }[] } | null;
+  options?: { copies?: number | null; extras?: { id: string; copies?: number | null; plate?: number | null; tray_id?: number | null }[] } | null;
   printer_id: string;
   /** Setting changes made for this slice. */
   tweaks?: SliceTweaks;
@@ -247,6 +249,15 @@ export interface Suggestion {
   use_ams: boolean;
   warnings: string[];
   complete: boolean;
+}
+
+/** One file in a slice and the filament slots it prints with. */
+export interface SlicedFile {
+  id?: string | null;
+  title: string;
+  cover?: string | null;
+  slots: number[];
+  copies: number;
 }
 
 /** A model added to a job's plate. */

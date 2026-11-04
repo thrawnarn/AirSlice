@@ -3,7 +3,7 @@
 use crate::{
     models::{
         PrintOutcome,
-        ExtraChoice, FilamentInfo, Inspection, Job, JobState, MeshTransform, ModelFile, PlateExtra, PlateInfo, PrintOptions, PrintStart, Printer, QueueItem,
+        ExtraChoice, SlicedFile, FilamentInfo, Inspection, Job, JobState, MeshTransform, ModelFile, PlateExtra, PlateInfo, PrintOptions, PrintStart, Printer, QueueItem,
         ResolvedModel, SliceOptions, SliceOutcome, Source, now,
     },
     printer::{ftp, mapping},
@@ -674,7 +674,7 @@ fn merged_slots(trays: &[i32]) -> Vec<u32> {
 
 /// Slice a sliced job again with the trays chosen for it after all, so its
 /// time, filament and cost fit them.
-pub async fn slice_with_trays(state: &Shared, id: &str, mapping: &[i32]) -> anyhow::Result<Job> {
+pub async fn slice_with_trays(state: &Shared, id: &str, mapping: &[i32], extra_trays: &std::collections::HashMap<String, i32>) -> anyhow::Result<Job> {
     let job = get_job(state, id).await.ok_or_else(|| anyhow!("job not found"))?;
     let sliced = job.slice.clone().ok_or_else(|| anyhow!("this job isn't sliced"))?;
     let inspection = job.inspection.clone().ok_or_else(|| anyhow!("this job has no file"))?;
@@ -700,7 +700,11 @@ pub async fn slice_with_trays(state: &Shared, id: &str, mapping: &[i32]) -> anyh
         .extras
         .iter()
         .zip(&slots)
-        .map(|(e, slot)| ExtraChoice { tray_id: mapping.get(*slot as usize - 1).copied().filter(|t| *t >= 0), ..e.clone() })
+        .map(|(e, slot)| ExtraChoice {
+            // A file can leave a slot it shares with another file; the slot's own tray otherwise.
+            tray_id: extra_trays.get(&e.id).or_else(|| mapping.get(*slot as usize - 1)).copied().filter(|t| *t >= 0),
+            ..e.clone()
+        })
         .collect();
     // Slots merged last time aren't listed for choosing: they follow the slot they became.
     let merged = merged_slots(&old_base);
@@ -940,6 +944,27 @@ pub async fn slice(state: &Shared, id: &str, opts: SliceOptions) -> anyhow::Resu
         (None, _) => (Vec::new(), None, String::new()),
     };
     let merge = merged_slots(preferred_trays.as_deref().unwrap_or(&[]));
+    let mut base_file_slots: Vec<u32> = (1..=base_slots as u32).map(|s| merge.get(s as usize - 1).copied().unwrap_or(s)).collect();
+    base_file_slots.dedup();
+    base_file_slots.sort();
+    base_file_slots.dedup();
+    let mut files = vec![SlicedFile {
+        id: None,
+        title: job.model_title.clone(),
+        cover: job.model_cover.clone(),
+        slots: base_file_slots,
+        copies: opts.transform.copies().max(1),
+    }];
+    files.extend(chosen.iter().zip(&slots).map(|((e, c), slot)| SlicedFile {
+        id: Some(e.id.clone()),
+        title: e.title.clone(),
+        cover: e.cover.clone(),
+        slots: vec![*slot],
+        copies: c.copies.unwrap_or(1),
+    }));
+    if chosen.is_empty() {
+        files.clear();
+    }
     let filament_used = match &plan {
         Plan::Printer { filament, arrange: true, .. } => filaments.first().map(|f| f.profile.clone()).or(filament.clone()),
         _ => None,
@@ -1023,6 +1048,7 @@ pub async fn slice(state: &Shared, id: &str, opts: SliceOptions) -> anyhow::Resu
         let _ = update_job(&st, &id, |j| {
             if let Some(s) = j.slice.as_mut() {
                 s.options = Some(asked);
+                s.files = files;
                 if preferred_trays.is_some() || filament_used.is_some() {
                     s.preferred_trays = preferred_trays.clone();
                     if s.settings == "printer" {
@@ -1242,6 +1268,7 @@ async fn run_slice(
         bed_type: threemf::project_setting(&output, "curr_bed_type"),
         tweaks: if overrides.is_empty() { Default::default() } else { tweaks },
         options: None,
+        files: vec![],
         output_path: output.clone(),
     };
     let file_name = output.file_name().map(|n| n.to_string_lossy().into_owned());

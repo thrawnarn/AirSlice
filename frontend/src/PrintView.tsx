@@ -1,6 +1,6 @@
-import { Suspense, lazy, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { api, findModelLink } from "./api";
-import type { ConnectionSettings, FilamentInfo, Job, MeshTransform, NextPlateSuggestion, PlateInfo, SliceTweaks, Printer, ProfileChoices, QueueEntry, ResolvedModel, Spool as SpoolmanSpool, Suggestion, Tray, TrayFilament } from "./types";
+import type { ConnectionSettings, FilamentInfo, Job, MeshTransform, NextPlateSuggestion, PlateInfo, SliceTweaks, Printer, ProfileChoices, QueueEntry, ResolvedModel, SlicedFile, Spool as SpoolmanSpool, Suggestion, Tray, TrayFilament } from "./types";
 import { CollectionPicker } from "./CollectionsView";
 import { PrintControls } from "./PrintersView";
 import { TrayPicker, TraysSheet, loadedTrays, money, plateName, spoolLine, usePlates, usePrinterSpools } from "./Trays";
@@ -141,13 +141,24 @@ function Intake({ sharedLink, onSharedConsumed, openJob, defaultPrinter, printer
     }
   }
 
-  async function upload(file: File) {
+  /** The first file becomes the job; the others go on its plate. */
+  async function upload(files: File[]) {
     setBusy("upload");
     setError(null);
-    try {
+    const formFor = (file: File) => {
       const form = new FormData();
       form.append("file", file);
-      const job = await api.upload<Job>("jobs/upload", form);
+      return form;
+    };
+    try {
+      const job = await api.upload<Job>("jobs/upload", formFor(files[0]));
+      for (const file of files.slice(1)) {
+        try {
+          await api.upload<Job>(`jobs/${job.id}/extras/upload`, formFor(file));
+        } catch (e) {
+          toast(tr("Couldn't add {0}: {1}", [file.name, (e as Error).message]));
+        }
+      }
       openJob(job.id);
     } catch (e) {
       setError((e as Error).message);
@@ -194,14 +205,19 @@ function Intake({ sharedLink, onSharedConsumed, openJob, defaultPrinter, printer
         <div className="intake-alt faint">
           <span>{tr("Have the file already?")}</span>
           <button type="button" className="btn ghost small" onClick={() => fileInput.current?.click()} disabled={busy !== ""}>
-            {busy === "upload" ? tr("Uploading…") : tr("Upload 3MF or STL")}
+            {busy === "upload" ? tr("Uploading…") : tr("Upload 3MF or STL files")}
           </button>
           <input
             ref={fileInput}
             type="file"
             accept=".3mf,.stl,.obj,.step,.stp"
             hidden
-            onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
+            multiple
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              e.target.value = "";
+              if (files.length) void upload(files);
+            }}
           />
         </div>
       </form>
@@ -470,11 +486,16 @@ function AddModelSheet({ job, onAdded, onClose }: { job: Job; onAdded: (j: Job) 
     }
   }
   const addUrl = (url: string) => add(() => api.post<Job>(`jobs/${job.id}/extras`, { url }));
-  const addFile = (file: File) => {
-    const form = new FormData();
-    form.append("file", file);
-    void add(() => api.upload<Job>(`jobs/${job.id}/extras/upload`, form));
-  };
+  const addFiles = (files: File[]) =>
+    void add(async () => {
+      let last = job;
+      for (const file of files) {
+        const form = new FormData();
+        form.append("file", file);
+        last = await api.upload<Job>(`jobs/${job.id}/extras/upload`, form);
+      }
+      return last;
+    });
   const tabs: ["link" | "collections" | "history", string][] = [
     ["link", tr("Link")],
     ["collections", tr("Collections")],
@@ -512,7 +533,7 @@ function AddModelSheet({ job, onAdded, onClose }: { job: Job; onAdded: (j: Job) 
           <p className="faint small" style={{ margin: "12px 0 0" }}>
             {tr("Or from this device:")}{" "}
             <button type="button" className="linkish" disabled={busy} onClick={() => fileInput.current?.click()}>
-              {tr("Choose file")}
+              {tr("Choose files")}
             </button>
           </p>
           <input
@@ -520,10 +541,11 @@ function AddModelSheet({ job, onAdded, onClose }: { job: Job; onAdded: (j: Job) 
             type="file"
             accept=".3mf,.stl,.obj,.step,.stp"
             hidden
+            multiple
             onChange={(e) => {
-              const f = e.target.files?.[0];
+              const files = Array.from(e.target.files ?? []);
               e.target.value = "";
-              if (f) addFile(f);
+              if (files.length) addFiles(files);
             }}
           />
         </>
@@ -561,7 +583,33 @@ function AddModelSheet({ job, onAdded, onClose }: { job: Job; onAdded: (j: Job) 
   );
 }
 
-/** Other models to print on the same plate. */
+/** One file on the plate: its settings fold out under its name. */
+function FileCard({ title, cover, summary, open, onToggle, children }: { title: string; cover?: string | null; summary?: string; open: boolean; onToggle?: () => void; children: ReactNode }) {
+  const head = (
+    <>
+      {cover && <img className="extra-cover" src={remoteImg(cover)} alt="" loading="lazy" />}
+      <span className="grow" style={{ minWidth: 0 }}>
+        <span className="ellipsis file-card-title">{title}</span>
+        {summary && !open && <span className="faint small ellipsis file-card-summary">{summary}</span>}
+      </span>
+      {onToggle && <span className="file-card-chevron" aria-hidden="true">{open ? "▾" : "▸"}</span>}
+    </>
+  );
+  return (
+    <div className={`file-card ${open ? "open" : ""}`}>
+      {onToggle ? (
+        <button type="button" className="file-card-head" aria-expanded={open} onClick={onToggle}>
+          {head}
+        </button>
+      ) : (
+        <div className="file-card-head">{head}</div>
+      )}
+      {open && <div className="file-card-body">{children}</div>}
+    </div>
+  );
+}
+
+/** The added models, each with its own settings. */
 function PlateExtras({
   job,
   picks,
@@ -570,6 +618,8 @@ function PlateExtras({
   onChange,
   onManage,
   spools,
+  openId,
+  onOpen,
 }: {
   job: Job;
   picks: Record<string, ExtraPick>;
@@ -578,6 +628,8 @@ function PlateExtras({
   onChange: (j: Job) => void;
   onManage: () => void;
   spools?: Record<string, SpoolmanSpool> | null;
+  openId: string;
+  onOpen: (id: string) => void;
 }) {
   const extras = job.extras ?? [];
   const [adding, setAdding] = useState(false);
@@ -589,6 +641,7 @@ function PlateExtras({
     setError(null);
     try {
       onChange(await api.del<Job>(`jobs/${job.id}/extras/${id}`));
+      onOpen(BASE_FILE);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -597,54 +650,67 @@ function PlateExtras({
   }
 
   return (
-    <div style={{ margin: "4px 0 14px" }}>
-      {extras.length > 0 && (
-        <div className="panel transform" style={{ marginBottom: 8 }}>
-          {extras.map((x) => {
-            const pick = picks[x.id] ?? { copies: 1, tray: -1 };
-            return (
-              <div key={x.id} className="extra">
-                <div className="row" style={{ gap: 10 }}>
-                  {x.cover && <img className="extra-cover" src={remoteImg(x.cover)} alt="" loading="lazy" />}
-                  <div className="grow ellipsis" style={{ fontWeight: 620 }}>{x.title}</div>
-                  <button type="button" className="btn small" disabled={busy} onClick={() => void remove(x.id)}>
-                    {tr("Remove")}
-                  </button>
-                </div>
-                {x.multicolor && <p className="faint small" style={{ margin: "6px 0 0" }}>{tr("This model has several colours in its file. Added to this plate, it prints in one colour.")}</p>}
-                {x.plates.length > 1 && (
-                  <label className="field" style={{ margin: "8px 0 0" }}>
-                    <span>{tr("Plate from this file")}</span>
-                    <select className="input" value={pick.plate ?? x.plates[0].index} onChange={(e) => onPick(x.id, { plate: Number(e.target.value) })}>
-                      {x.plates.map((p) => (
-                        <option key={p.index} value={p.index}>
-                          {p.name ?? tr("Plate {0}", [p.index])}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-                {trays.length > 0 && (
-                  <div className="tf-row">
-                    <span className="tf-label">{tr("Print with")}</span>
-                    <TrayPicker title={tr("Print {0} with", [x.title])} trays={trays} value={pick.tray} onChange={(id) => onPick(x.id, { tray: id })} onManage={onManage} spools={spools} />
-                  </div>
-                )}
-                <CopiesStepper value={pick.copies} onChange={(n) => onPick(x.id, { copies: n })} />
+    <>
+      {extras.map((x) => {
+        const pick = picks[x.id] ?? { copies: 1, tray: -1 };
+        const tray = trays.find((t) => t.id === pick.tray);
+        return (
+          <FileCard
+            key={x.id}
+            title={x.title}
+            cover={x.cover}
+            summary={[pick.copies > 1 ? tr("{0} copies", [pick.copies]) : null, tray ? trayLabel(tray) : null].filter(Boolean).join(" · ")}
+            open={openId === x.id}
+            onToggle={() => onOpen(openId === x.id ? "" : x.id)}
+          >
+            {x.multicolor && <p className="faint small" style={{ margin: "0 0 8px" }}>{tr("This model has several colours in its file. Added to this plate, it prints in one colour.")}</p>}
+            {x.plates.length > 1 && (
+              <label className="field">
+                <span>{tr("Plate from this file")}</span>
+                <select className="input" value={pick.plate ?? x.plates[0].index} onChange={(e) => onPick(x.id, { plate: Number(e.target.value) })}>
+                  {x.plates.map((p) => (
+                    <option key={p.index} value={p.index}>
+                      {p.name ?? tr("Plate {0}", [p.index])}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {trays.length > 0 && (
+              <div className="tf-row">
+                <span className="tf-label">{tr("Print with")}</span>
+                <TrayPicker title={tr("Print {0} with", [x.title])} trays={trays} value={pick.tray} onChange={(id) => onPick(x.id, { tray: id })} onManage={onManage} spools={spools} />
               </div>
-            );
-          })}
-          <p className="faint small" style={{ margin: "8px 0" }}>{tr("The slicer arranges everything on the plate. You'll see the result after slicing.")}</p>
-        </div>
-      )}
+            )}
+            <CopiesStepper value={pick.copies} onChange={(n) => onPick(x.id, { copies: n })} />
+            <button type="button" className="btn small" style={{ marginTop: 8 }} disabled={busy} onClick={() => void remove(x.id)}>
+              {tr("Remove from the plate")}
+            </button>
+          </FileCard>
+        );
+      })}
       {error && <Notice tone="err">{error}</Notice>}
-      <button type="button" className="btn block" onClick={() => setAdding(true)}>
-        {tr("More models on this plate")}
+      <button type="button" className="btn block" style={{ margin: "8px 0 4px" }} onClick={() => setAdding(true)}>
+        {tr("Add another file")}
       </button>
-      {adding && <AddModelSheet job={job} onAdded={onChange} onClose={() => setAdding(false)} />}
-    </div>
+      {extras.length > 0 && <p className="faint small" style={{ margin: "4px 0 0" }}>{tr("The slicer arranges everything on the plate. You'll see the result after slicing.")}</p>}
+      {adding && (
+        <AddModelSheet
+          job={job}
+          onAdded={(j) => {
+            onChange(j);
+            const last = j.extras?.[j.extras.length - 1];
+            if (last) onOpen(last.id);
+          }}
+          onClose={() => setAdding(false)}
+        />
+      )}
+    </>
   );
 }
+
+/** The open file card for the job's own file. */
+const BASE_FILE = "base";
 
 function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer[]; onChange: (j: Job) => void }) {
   const insp = job.inspection!;
@@ -662,6 +728,7 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
   const [traysTouched, setTraysTouched] = useState(false);
   const [showTrays, setShowTrays] = useState(false);
   const [copies, setCopies] = useState(1);
+  const [openFile, setOpenFile] = useState(BASE_FILE);
   const plates = usePlates();
   // "" = the printer's default plate, or the file's/profile's own when it has none.
   const [bedType, setBedType] = useState("");
@@ -839,6 +906,15 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
     <section>
       <PrinterPicker printers={printers} value={printerId} onChange={setPrinterId} />
 
+      <h2 style={{ marginBottom: 2 }}>{extras.length ? tr("Files on this plate") : tr("File")}</h2>
+      <p className="faint small" style={{ margin: "0 0 10px" }}>{tr("What you set inside a file applies to that file only.")}</p>
+      <FileCard
+        title={job.model_title}
+        cover={job.model_cover}
+        summary={[insp.plates.length > 1 ? tr("Plate {0}", [plate]) : null, (mesh ? transform.copies ?? 1 : copies) > 1 ? tr("{0} copies", [mesh ? transform.copies ?? 1 : copies]) : null, ...slots.map((_, i) => trayOf(i)).filter(Boolean).map((t) => trayLabel(t!))].filter(Boolean).join(" · ")}
+        open={openFile === BASE_FILE || !extras.length}
+        onToggle={extras.length ? () => setOpenFile(openFile === BASE_FILE ? "" : BASE_FILE) : undefined}
+      >
       {insp.plates.length > 1 && <h2>{tr("Plate")}</h2>}
       <div className="plates" role="group" aria-label={tr("Plates")}>
         {insp.plates.map((p) => (
@@ -970,10 +1046,33 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
               {tr("Check the trays")}
             </button>
           </p>
-          {showTrays && <TraysSheet printer={printer} onClose={() => setShowTrays(false)} />}
         </>
       )}
 
+      {effective === "printer" && mesh && choices && (
+              <label className="field">
+                <span>{tr("Filament profile")}</span>
+                <select className="input" value={filament} onChange={(e) => setFilament(e.target.value)}>
+                  <option value="">{loaded.length ? tr("Match the chosen tray") : tr("Printer default")}</option>
+                  {choices.filaments.map((f) => (
+                    <option key={f.name} value={f.name}>
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+      )}
+      {mesh ? (
+        <TransformControls value={transform} onChange={setTransform} />
+      ) : extras.length ? (
+        <p className="faint small">{tr("A 3MF can't have copies together with other files. To print it twice, add it again from History.")}</p>
+      ) : (
+        <div className="panel transform">
+          <CopiesStepper value={copies} onChange={setCopies} />
+        </div>
+      )}
+
+      </FileCard>
       {printer && (
         <PlateExtras
           job={job}
@@ -983,9 +1082,14 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
           onChange={onChange}
           onManage={() => setShowTrays(true)}
           spools={spoolInfo?.trays}
+          openId={openFile}
+          onOpen={setOpenFile}
         />
       )}
+      {printer && showTrays && <TraysSheet printer={printer} onClose={() => setShowTrays(false)} />}
 
+      <h2 style={{ marginBottom: 2 }}>{tr("Whole print")}</h2>
+      <p className="faint small" style={{ margin: "0 0 10px" }}>{extras.length ? tr("These apply to everything on the plate.") : tr("These apply to the whole print.")}</p>
       {insp.kind === "project" && printer && insp.printer_model && !sameModel && (
         <Notice tone="warn">
           {tr("This file was set up for a {0}. It will be sliced with your {1} profile instead.", [insp.printer_model.replace(/^Bambu Lab /, ""), printer.printer_model.replace(/^Bambu Lab /, "")])}
@@ -1032,7 +1136,7 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
 
       {effective === "printer" && choices && (
         <details style={{ margin: "4px 0 14px" }}>
-          <summary className="small muted">{tr("Quality{0}: {1}", [insp.kind === "mesh" ? tr(" and filament") : "", process || "printer default"])}</summary>
+          <summary className="small muted">{tr("Quality{0}: {1}", ["", process || "printer default"])}</summary>
           <div style={{ marginTop: 10 }}>
             <label className="field">
               <span>{tr("Quality")}</span>
@@ -1044,32 +1148,11 @@ function SliceOptions({ job, printers, onChange }: { job: Job; printers: Printer
                 ))}
               </select>
             </label>
-            {insp.kind === "mesh" && (
-              <label className="field">
-                <span>{tr("Filament profile")}</span>
-                <select className="input" value={filament} onChange={(e) => setFilament(e.target.value)}>
-                  <option value="">{loaded.length ? tr("Match the chosen tray") : tr("Printer default")}</option>
-                  {choices.filaments.map((f) => (
-                    <option key={f.name} value={f.name}>
-                      {f.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
           </div>
         </details>
       )}
 
       {effective !== "presliced" && <TweakPicker value={tweaks} onChange={setTweaks} />}
-
-      {mesh ? (
-        <TransformControls value={transform} onChange={setTransform} />
-      ) : extras.length ? null : (
-        <div className="panel transform">
-          <CopiesStepper value={copies} onChange={setCopies} />
-        </div>
-      )}
 
       {error && <Notice tone="err">{error}</Notice>}
       <button className="btn go" onClick={() => slice()} disabled={busy || !printerId}>
@@ -1193,7 +1276,7 @@ function PrintOptions({ job, printers, onChange }: { job: Job; printers: Printer
     run(() => api.post<Job>(`jobs/${job.id}/print`, body()), offline ? tr("Will send when {0} is back", [printer?.name ?? tr("the printer")]) : tr("Sending to the printer"));
   const addToQueue = () => run(() => api.post<Job>(`jobs/${job.id}/queue`, body()), tr("Added to the queue"));
   const changeSettings = () => run(() => api.post<Job>(`jobs/${job.id}/reslice`));
-  const sliceForTrays = (ids: number[]) => run(() => api.post<Job>(`jobs/${job.id}/slice-with-trays`, { ams_mapping: ids }));
+  const sliceForTrays = (ids: number[], extraTrays?: Record<string, number>) => run(() => api.post<Job>(`jobs/${job.id}/slice-with-trays`, { ams_mapping: ids, extra_trays: extraTrays }));
   /** A person picked another tray. */
   function pickTray(filament: number, id: number) {
     const next = [...(mapping ?? Array(slice.filament_slots).fill(-1))];
@@ -1205,6 +1288,57 @@ function PrintOptions({ job, printers, onChange }: { job: Job; printers: Printer
       void sliceForTrays(next);
     }
   }
+
+  const files: SlicedFile[] = slice.files?.length ? slice.files : [{ title: job.model_title, cover: job.model_cover, slots: used.map((f) => f.id), copies: slice.transform?.copies ?? slice.options?.copies ?? 1 }];
+  const manyFiles = files.length > 1;
+  const [openFile, setOpenFile] = useState(0);
+  /** A tray for one file. A slot two files share has to split, which takes a slice. */
+  function pickFileTray(file: SlicedFile, slot: number, id: number) {
+    const shared = files.some((x) => x !== file && x.slots.includes(slot));
+    if (!shared || !canReslice) {
+      pickTray(slot, id);
+      return;
+    }
+    const next = [...(mapping ?? Array(slice.filament_slots).fill(-1))];
+    if (!file.id) next[slot - 1] = id;
+    const extraTrays: Record<string, number> = {};
+    for (const x of files) {
+      if (x.id) extraTrays[x.id] = x === file ? id : (next[x.slots[0] - 1] ?? -1);
+    }
+    if (!file.id) for (const x of files) if (x.id && x.slots.includes(slot)) extraTrays[x.id] = mapping?.[slot - 1] ?? -1;
+    void sliceForTrays(next, extraTrays);
+  }
+  const filamentRows = (file: SlicedFile) => (
+    <ul className="mapping" style={{ padding: 0, margin: 0 }}>
+      {used.filter((f) => file.slots.includes(f.id)).map((f) => {
+        const t = trayFor(f.id);
+        const shared = files.some((x) => x !== file && x.slots.includes(f.id));
+        return (
+          <li key={f.id} className="map-row">
+            <div className="row" style={{ gap: 8 }}>
+              <Spool color={f.color} size={36} label={tr("Model filament {0}: {1}", [f.id, f.type])} />
+              <div>
+                <div style={{ fontWeight: 620 }}>{f.type || "Filament"}</div>
+                <div className="faint num">{shared ? tr("{0} g, shared", [f.used_g.toFixed(1)]) : `${f.used_g.toFixed(1)} g`}</div>
+              </div>
+            </div>
+            <div className="map-wire" style={{ ["--from" as string]: f.color, ["--to" as string]: t?.color || "var(--line)" }} />
+            <div className="map-pick">
+              <TrayPicker
+                title={tr("Tray for filament {0} ({1})", [f.id, f.type])}
+                trays={trays}
+                value={mapping?.[f.id - 1] ?? -1}
+                onChange={(id) => pickFileTray(file, f.id, id)}
+                extra={trays.some((x) => x.id === 254) ? [] : [{ id: 254, label: tr("External spool") }]}
+                onManage={printer ? () => setShowTrays(true) : undefined}
+                spools={job.spools}
+              />
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
 
   return (
     <section>
@@ -1255,48 +1389,28 @@ function PrintOptions({ job, printers, onChange }: { job: Job; printers: Printer
         </Notice>
       )}
 
-      {slice.transform && <p className="faint">{describeTransform(slice.transform)}</p>}
-      {slice.tweaks && Object.keys(slice.tweaks).length > 0 && <p className="faint">{tr("Changed settings: {0}.", [describeTweaks(slice.tweaks)])}</p>}
-      {slice.bed_type && (
-        <p className="faint">
-          {tr("Made for the {0}{1}", [plateName(plates, slice.bed_type), printer?.default_plate && printer.default_plate.toLowerCase() !== slice.bed_type.toLowerCase()
-            ? tr(" — not the {0} that's usually on {1}. Swap the plate before printing.", [plateName(plates, printer.default_plate), printer.name])
-            : "."])}
-        </p>
-      )}
-
-      <h2>{tr("Filament")}</h2>
-      {used.length === 0 ? (
-        <p className="muted">The slicer didn't report filament use; the printer will use what's loaded.</p>
+      {manyFiles ? (
+        <>
+          <h2 style={{ marginBottom: 2 }}>{tr("Files on this plate")}</h2>
+          <p className="faint small" style={{ margin: "0 0 10px" }}>{tr("Tap a file to choose its filament. That choice applies to that file only.")}</p>
+          {files.map((file, i) => (
+            <FileCard
+              key={file.id ?? "base"}
+              title={file.copies > 1 ? `${file.copies} × ${file.title}` : file.title}
+              cover={file.cover}
+              summary={file.slots.map((s) => trayFor(s)).filter(Boolean).map((t) => trayLabel(t!)).filter((l, k, all) => all.indexOf(l) === k).join(" · ")}
+              open={openFile === i}
+              onToggle={() => setOpenFile(openFile === i ? -1 : i)}
+            >
+              {filamentRows(file)}
+            </FileCard>
+          ))}
+        </>
       ) : (
-        <ul className="mapping panel" style={{ padding: "4px 16px" }}>
-          {used.map((f) => {
-            const t = trayFor(f.id);
-            return (
-              <li key={f.id} className="map-row">
-                <div className="row" style={{ gap: 8 }}>
-                  <Spool color={f.color} size={36} label={tr("Model filament {0}: {1}", [f.id, f.type])} />
-                  <div>
-                    <div style={{ fontWeight: 620 }}>{f.type || "Filament"}</div>
-                    <div className="faint num">{f.used_g.toFixed(1)} g</div>
-                  </div>
-                </div>
-                <div className="map-wire" style={{ ["--from" as string]: f.color, ["--to" as string]: t?.color || "var(--line)" }} />
-                <div className="map-pick">
-                  <TrayPicker
-                    title={tr("Tray for filament {0} ({1})", [f.id, f.type])}
-                    trays={trays}
-                    value={mapping?.[f.id - 1] ?? -1}
-                    onChange={(id) => pickTray(f.id, id)}
-                    extra={trays.some((x) => x.id === 254) ? [] : [{ id: 254, label: tr("External spool") }]}
-                    onManage={printer ? () => setShowTrays(true) : undefined}
-                    spools={job.spools}
-                  />
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+        <>
+          <h2>{tr("Filament")}</h2>
+          {used.length === 0 ? <p className="muted">The slicer didn't report filament use; the printer will use what's loaded.</p> : <div className="panel" style={{ padding: "4px 16px" }}>{filamentRows(files[0])}</div>}
+        </>
       )}
       {job.suggestion?.warnings.map((w) => (
         <Notice key={w} tone="warn">
@@ -1313,7 +1427,19 @@ function PrintOptions({ job, printers, onChange }: { job: Job; printers: Printer
       )}
       {printer && showTrays && <TraysSheet printer={printer} onClose={() => setShowTrays(false)} />}
 
-      <div style={{ marginTop: 14 }}>
+      <h2 style={{ marginBottom: 2 }}>{tr("Whole print")}</h2>
+      <p className="faint small" style={{ margin: "0 0 10px" }}>{manyFiles ? tr("These apply to everything on the plate.") : tr("These apply to the whole print.")}</p>
+      {slice.transform && <p className="faint">{describeTransform(slice.transform)}</p>}
+      {slice.tweaks && Object.keys(slice.tweaks).length > 0 && <p className="faint">{tr("Changed settings: {0}.", [describeTweaks(slice.tweaks)])}</p>}
+      {slice.bed_type && (
+        <p className="faint">
+          {tr("Made for the {0}{1}", [plateName(plates, slice.bed_type), printer?.default_plate && printer.default_plate.toLowerCase() !== slice.bed_type.toLowerCase()
+            ? tr(" — not the {0} that's usually on {1}. Swap the plate before printing.", [plateName(plates, printer.default_plate), printer.name])
+            : "."])}
+        </p>
+      )}
+
+      <div>
         <label className="check">
           <input type="checkbox" checked={opts.bed_leveling} onChange={(e) => setOpts({ ...opts, bed_leveling: e.target.checked })} />
           <span>{tr("Bed levelling")}</span>

@@ -319,11 +319,14 @@ pub async fn reslice(State(state): State<Shared>, Path(id): Path<String>) -> Api
 #[derive(Deserialize)]
 pub struct TraysBody {
     ams_mapping: Vec<i32>,
+    /// Trays for added models (id -> tray), which can differ from their slot's.
+    #[serde(default)]
+    extra_trays: std::collections::HashMap<String, i32>,
 }
 
 /// Slice a sliced job again with the trays now chosen.
 pub async fn slice_with_trays(State(state): State<Shared>, Path(id): Path<String>, Json(body): Json<TraysBody>) -> ApiResult<Json<JobView>> {
-    let job = jobs::slice_with_trays(&state, &id, &body.ams_mapping).await.map_err(bad)?;
+    let job = jobs::slice_with_trays(&state, &id, &body.ams_mapping, &body.extra_trays).await.map_err(bad)?;
     Ok(Json(view(&state, job).await))
 }
 

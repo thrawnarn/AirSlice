@@ -380,6 +380,7 @@ pub async fn import(state: &Shared, body: ImportPrint) -> anyhow::Result<ImportR
         bed_type: None,
         tweaks: Default::default(),
         options: None,
+        files: vec![],
         output_path: Default::default(),
     });
     job.print = Some(PrintStart {
@@ -490,6 +491,7 @@ mod tests {
             bed_type: None,
             tweaks: Default::default(),
             options: None,
+            files: vec![],
             output_path: Default::default(),
         });
         job.print = Some(PrintStart {

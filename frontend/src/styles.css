@@ -435,6 +435,15 @@ fieldset.field { border: 0; padding: 0; margin: 0 0 14px; min-width: 0; }
 .field > small { display: block; color: var(--ink-3); font-size: 13px; margin-top: 4px; }
 .check-list { display: grid; gap: 2px; }
 
+.file-card { margin-bottom: 8px; border-radius: var(--radius-m); background: var(--panel); border: 1px solid transparent; }
+.file-card.open { border-color: var(--line); }
+.file-card-head { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 14px; background: none; border: 0; color: inherit; font: inherit; text-align: left; min-height: 60px; }
+button.file-card-head { cursor: pointer; }
+.file-card-title { display: block; font-weight: 620; }
+.file-card-summary { display: block; }
+.file-card-chevron { flex: none; color: var(--ink-2); }
+.file-card-body { padding: 4px 14px 14px; }
+.file-card-body .tf-label { white-space: nowrap; }
 .extra { padding: 10px 0; border-bottom: 1px solid var(--line); }
 .extra .tf-row:last-child { border-bottom: 0; padding-bottom: 0; }
 .extra .tf-label { white-space: nowrap; }
