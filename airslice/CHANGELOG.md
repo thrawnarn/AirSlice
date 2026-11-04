@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.4
+
+- Fixed the plate preview showing the earlier result after slicing again.
+- Print several plates of a file together on one build plate, with their colours.
+- A 3MF can now have copies alongside other files on the plate.
+- The filament list shows only what the chosen plates use, when the file tells. Painted models and colour changes by layer still list every filament.
+- A link with several files or print profiles asks which one to add, and added files show plate pictures.
+- Plate and file names wrap instead of being cut off.
+
 ## 0.3.3
 
 - Upload several files at once, on the start page or when adding to a plate.
