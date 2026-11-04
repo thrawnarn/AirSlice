@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+
+- Fixed "couldn't read the added model" for 3MF files from Bambu Studio with settings OrcaSlicer refuses.
+- Fixed "the models don't all fit" when it was really the prime tower running off the bed. AirSlice now slices once more without a tower and says so in the job log. Filament changes still purge, but colours may come out a bit less clean.
+
 ## 0.3.1
 
 - "More models on this plate" is now a button that opens a dialog: paste a link or choose a file, pick from your MakerWorld collections, or pick an earlier model from History.
