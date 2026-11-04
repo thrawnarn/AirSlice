@@ -1115,8 +1115,23 @@ function PrintOptions({ job, printers, onChange }: { job: Job; printers: Printer
   const chosenColours = mapping ? trayCount(used.map((f) => mapping[f.id - 1])) : slicedColours;
   const canReslice = slice.settings !== "presliced" && !job.files_removed;
   const colourCountChanged = canReslice && used.length > 0 && chosenColours !== slicedColours;
-  const [cost, setCost] = useState(job.cost_estimate ?? null);
-  useEffect(() => setCost(job.cost_estimate ?? null), [job.cost_estimate]);
+  // The server's estimate is for the suggested trays. Once a person picks trays,
+  // ask for their cost; the page's refresh mustn't put the old one back.
+  const [pickedCost, setPickedCost] = useState<Job["cost_estimate"]>(undefined);
+  const mappingKey = mapping?.join() ?? "";
+  useEffect(() => {
+    if (!mappingTouched || colourCountChanged) return;
+    let current = true;
+    api
+      .post<Job["cost_estimate"]>(`jobs/${job.id}/cost-with-trays`, { ams_mapping: mapping })
+      .then((c) => current && setPickedCost(c ?? null))
+      .catch(() => undefined);
+    return () => {
+      current = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mappingKey, mappingTouched, job.id]);
+  const cost = pickedCost !== undefined ? pickedCost : (job.cost_estimate ?? null);
   // Spools that don't hold enough for this print (Spoolman).
   const short = used.flatMap((f) => {
     const tray = mapping?.[f.id - 1];
@@ -1188,9 +1203,7 @@ function PrintOptions({ job, printers, onChange }: { job: Job; printers: Printer
     // Another number of colours changes the time and filament: slice for it.
     if (canReslice && trayCount(used.map((f) => next[f.id - 1])) !== slicedColours) {
       void sliceForTrays(next);
-      return;
     }
-    api.post<Job["cost_estimate"]>(`jobs/${job.id}/cost-with-trays`, { ams_mapping: next }).then((c) => setCost(c ?? null)).catch(() => undefined);
   }
 
   return (
