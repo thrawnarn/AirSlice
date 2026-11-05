@@ -36,3 +36,4 @@ zip = "9.1.0"
 ring = "0.17"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 jiff = { version = "0.2.38", default-features = false, features = ["std", "tzdb-bundle-always"] }
+meshopt = "0.7.0"

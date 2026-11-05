@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { api } from "./api";
+import { creasedGeometry } from "./meshNormals";
 import type { MeshTransform } from "./types";
 import { tr } from "./i18n";
 
@@ -137,13 +138,8 @@ export default function PlatePreview({ jobId, plate, printerId, source, colorFor
   const geometries = useMemo(() => {
     if (!data) return [];
     return data.objects.map((o) => {
-      const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.BufferAttribute(decodePositions(o), 3));
-      if (o.indices) {
-        const buf = bytesOf(o.indices);
-        g.setIndex(new THREE.BufferAttribute(o.index_bits === 16 ? new Uint16Array(buf) : new Uint32Array(buf), 1));
-      }
-      g.computeVertexNormals();
+      const buf = bytesOf(o.indices);
+      const g = creasedGeometry(decodePositions(o), o.index_bits === 16 ? new Uint16Array(buf) : new Uint32Array(buf));
       g.computeBoundingBox();
       return g;
     });

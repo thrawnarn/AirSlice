@@ -45,7 +45,7 @@ over a VPN or a reverse proxy.
 ## Commands
 
 ```bash
-cd backend && cargo test            # 108 unit tests
+cd backend && cargo test            # 124 unit tests
 cd backend && cargo clippy --all-targets   # keep at zero warnings
 pytest tests/ha                     # integration, needs pytest-homeassistant-custom-component
 cd frontend && npx tsc -b && npm run build
@@ -207,16 +207,20 @@ screenshots).
   (Prusa), a TriangleSelector hex string read from the end (low 2 bits = split sides;
   leaf state = bits 2–3, 3 = extended: next nibble + 3; state n = filament n).
   `preview.rs` gives each triangle its most common painted filament.
-- Preview size: meshes are simplified by vertex clustering to ~250 k triangles per plate
-  (shared by detail, ≥ 2 k per object), positions packed as u16 over each object's box
-  (`origin` + q·`step`), indices u16 when they fit. T-rex plate: 2 M → 233 k triangles,
-  21 MB → 1.7 MB gzipped, edges within 0.4 mm. Cache files are `preview-v3-…`; bump the
-  version when the format changes. Model XML is streamed out of the zip (`read_model`,
+- Preview size: meshes go through `meshopt` edge collapse down to ~250 k triangles per plate (≥ 2 k per object), with
+  one allowed error in mm for the whole plate, raised from 0.005 by ×1.5 until it fits (`simplify_plate`; 13 rounds ≈ 0.8 mm, then
+  `simplify_sloppy` by share). Don't go back to vertex clustering or a budget by triangle count: averaging in a grid merged the two
+  sides of thin walls (pits in a printed egg, holes in the t-rex's tail) and flattened ribs, and a dense thread starved a big
+  wall beside it. Borders are locked when an object has several filaments, or gaps open between colours. `sanitize` runs first,
+  since the C++ simplifier trusts indices. `weld` makes STL soup indexed, for the simplifier and for the normals.
+  Positions packed as u16 over each object's box (`origin` + q·`step`), indices u16 when they fit.
+  `meshNormals.ts` makes normals with a 35° crease, as `computeVertexNormals` rounds every edge on shared points.
+  T-rex plate: 2 M → 170 k triangles in 5 s, 2 MB before gzip; 6.5 M generated 12 s / 475 MB, 20 M 26 s / 544 MB.
+  Cache files are `preview-v4-…`; bump the version when the format or the simplifying changes. Model XML is streamed out of the zip (`read_model`,
   one attribute pass per vertex/triangle) and only the chosen plate's sub-models are
   read. Meshes over 1.5 M points are merged into a 1200-cell grid as soon as their
   vertices are read (`merge_points`), so triangles map straight onto merged points;
-  the cap is 60 M triangles read. Generated plates in the release build: 6.5 M
-  triangles 5 s / ~310 MB, 20 M (1.4 GB XML) 13 s / ~390 MB, 1.4 MB sent. Preview
+  the cap is 60 M triangles read. Preview
   failures are logged (`preview failed`).
 - Headless Chromium on the Alpine HA SSH add-on has no WebGL (not even SwiftShader);
   PlatePreview catches the failure. For screenshots with the 3D preview run Chromium

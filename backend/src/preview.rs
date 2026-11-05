@@ -23,11 +23,16 @@ const COARSE_VERTICES: usize = 1_500_000;
 /// Grid cells along the longest side for that merge (~1 mm on a 256 mm plate
 /// would be 256; this keeps far more detail than a phone can show).
 const COARSE_CELLS: f32 = 1200.0;
-/// Triangles sent for display; more detail is merged away (a phone over
+/// Triangles sent for display; more detail is simplified away (a phone over
 /// VPN gets a few MB instead of tens).
 const PREVIEW_TRIANGLES: usize = 250_000;
 /// Small parts keep at least this much shape.
 const MIN_OBJECT_TRIANGLES: usize = 2_000;
+/// Allowed surface error when simplifying, mm: start here, grow until it fits.
+/// The last round allows about 0.8 mm, past that a preview looks wrong.
+const FIRST_ERROR: f32 = 0.005;
+const ERROR_GROWTH: f32 = 1.5;
+const ERROR_ROUNDS: usize = 13;
 /// Bambu lays plates out in a grid with a 1/5 plate gap (PartPlate.cpp).
 const PLATE_GAP: f32 = 0.2;
 
@@ -165,68 +170,113 @@ fn encode_indices(v: &[u32], vertices: usize) -> (String, u8) {
     }
 }
 
-/// Fewer triangles for display: vertices closer than a grid cell are merged
-/// (vertex clustering), growing the cell until the mesh fits `budget`.
-/// Coarse, but fast and good enough to see the model on the plate.
-fn simplify(m: &Mesh, budget: usize) -> Mesh {
-    let tris = m.triangles();
-    if tris <= budget || budget == 0 {
-        return m.clone();
+/// Vertices with the same position become one and triangles get indices, as
+/// STL files (and some 3MF exports) repeat each point for every triangle. The
+/// simplifier and the app's normals both need to see which faces touch.
+fn weld(m: &mut Mesh) {
+    let (vertices, tris) = (m.positions.len() / 3, m.triangles());
+    if !m.indices.is_empty() && vertices <= tris {
+        return;
     }
-    let corner = |t: usize, k: usize| -> [f32; 3] {
-        let v = if m.indices.is_empty() { t * 3 + k } else { m.indices[t * 3 + k] as usize };
-        let i = v * 3;
-        [m.positions[i], m.positions[i + 1], m.positions[i + 2]]
-    };
-    // Start from a cell that leaves about budget/2 vertices on the surface.
-    let area: f64 = (0..tris)
-        .map(|t| {
-            let (a, b, c) = (corner(t, 0), corner(t, 1), corner(t, 2));
-            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-            let w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-            let x = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
-            0.5 * ((x[0] * x[0] + x[1] * x[1] + x[2] * x[2]) as f64).sqrt()
+    let mut ids: HashMap<[u32; 3], u32> = HashMap::with_capacity(tris);
+    let mut positions = Vec::new();
+    let map: Vec<u32> = m
+        .positions
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|p| {
+            // +0.0 for -0.0, so the two count as the same point.
+            *ids.entry(p.map(|v| (v + 0.0).to_bits())).or_insert_with(|| {
+                positions.extend(p);
+                (positions.len() / 3 - 1) as u32
+            })
         })
-        .sum();
-    let mut cell = (area / (budget as f64 / 2.0)).sqrt().max(1e-3) as f32;
-    let mut out = Mesh::default();
-    for _ in 0..8 {
-        out = cluster(tris, &corner, cell);
-        if out.triangles() <= budget + budget / 10 {
-            break;
-        }
-        cell *= 1.4;
-    }
-    out
+        .collect();
+    m.indices = if m.indices.is_empty() { map } else { m.indices.iter().map(|&i| map[i as usize]).collect() };
+    m.positions = positions;
 }
 
-fn cluster(tris: usize, corner: &dyn Fn(usize, usize) -> [f32; 3], cell: f32) -> Mesh {
-    let mut cells: HashMap<(i32, i32, i32), u32> = HashMap::new();
-    let mut sums: Vec<[f64; 4]> = Vec::new();
-    let mut indices = Vec::new();
-    for t in 0..tris {
-        let mut tri = [0u32; 3];
-        for (k, slot) in tri.iter_mut().enumerate() {
-            let p = corner(t, k);
-            let key = ((p[0] / cell).floor() as i32, (p[1] / cell).floor() as i32, (p[2] / cell).floor() as i32);
-            let id = *cells.entry(key).or_insert_with(|| {
-                sums.push([0.0; 4]);
-                (sums.len() - 1) as u32
-            });
-            let s = &mut sums[id as usize];
-            s[0] += p[0] as f64;
-            s[1] += p[1] as f64;
-            s[2] += p[2] as f64;
-            s[3] += 1.0;
-            *slot = id;
-        }
-        // Triangles that collapsed into a line or a point disappear.
-        if tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2] {
-            indices.extend(tri);
+/// Safe input for the simplifier, which trusts its indices: a damaged file's
+/// triangles pointing outside the mesh go, unreadable numbers become 0.
+fn sanitize(m: &mut Mesh) {
+    for v in &mut m.positions {
+        if !v.is_finite() {
+            *v = 0.0;
         }
     }
-    let positions = sums.iter().flat_map(|s| [(s[0] / s[3]) as f32, (s[1] / s[3]) as f32, (s[2] / s[3]) as f32]).collect();
+    let n = (m.positions.len() / 3) as u32;
+    if m.indices.iter().any(|&i| i >= n) {
+        m.indices = m.indices.as_chunks::<3>().0.iter().filter(|t| t.iter().all(|&i| i < n)).flatten().copied().collect();
+    }
+    m.indices.truncate(m.indices.len() / 3 * 3);
+}
+
+/// The mesh with `indices`, dropping points no triangle uses any more.
+fn with_indices(m: &Mesh, indices: Vec<u32>) -> Mesh {
+    const UNUSED: u32 = u32::MAX;
+    let mut map = vec![UNUSED; m.positions.len() / 3];
+    let mut positions = Vec::new();
+    let indices = indices
+        .iter()
+        .map(|&i| {
+            let slot = &mut map[i as usize];
+            if *slot == UNUSED {
+                *slot = (positions.len() / 3) as u32;
+                positions.extend_from_slice(&m.positions[i as usize * 3..i as usize * 3 + 3]);
+            }
+            *slot
+        })
+        .collect();
     Mesh { positions, indices, ..Default::default() }
+}
+
+fn adapter(m: &Mesh) -> meshopt::VertexDataAdapter<'_> {
+    meshopt::VertexDataAdapter::new(meshopt::typed_to_bytes(&m.positions), 12, 0).expect("positions are xyz triples")
+}
+
+/// Collapse edges for as long as the surface stays within `error` mm. Sharp
+/// edges and thin walls survive, since points only ever move along the surface.
+fn collapse(m: &Mesh, error: f32, lock_border: bool) -> Mesh {
+    let mut options = meshopt::SimplifyOptions::ErrorAbsolute;
+    if lock_border {
+        options |= meshopt::SimplifyOptions::LockBorder;
+    }
+    let indices = meshopt::simplify(&m.indices, &adapter(m), MIN_OBJECT_TRIANGLES * 3, error, options, None);
+    with_indices(m, indices)
+}
+
+/// Fewer triangles for display, the same care for every part: one allowed
+/// error for the plate, raised until all of it fits the budget. Sharing the
+/// budget by triangle count instead let a dense little thread starve a big
+/// ribbed wall next to it.
+fn simplify_plate(meshes: &mut [(&mut Mesh, bool)], budget: usize) {
+    let total = |meshes: &[(&mut Mesh, bool)]| meshes.iter().map(|(m, _)| m.triangles()).sum::<usize>();
+    let mut error = FIRST_ERROR;
+    for _ in 0..ERROR_ROUNDS {
+        if total(meshes) <= budget {
+            return;
+        }
+        for (m, lock) in meshes.iter_mut() {
+            if m.triangles() > MIN_OBJECT_TRIANGLES {
+                **m = collapse(m, error, *lock);
+            }
+        }
+        error *= ERROR_GROWTH;
+    }
+    // Still too much at the largest error worth keeping (locked borders of
+    // heavily painted models, or just huge plates): cut by share, shape first.
+    let tris = total(meshes);
+    if tris <= budget + budget / 10 {
+        return;
+    }
+    for (m, _) in meshes.iter_mut() {
+        let share = (budget as f64 * m.triangles() as f64 / tris as f64).ceil() as usize;
+        if m.triangles() > share.max(MIN_OBJECT_TRIANGLES) {
+            let indices = meshopt::simplify_sloppy(&m.indices, &adapter(m), share.max(MIN_OBJECT_TRIANGLES) * 3, f32::MAX, None);
+            **m = with_indices(m, indices);
+        }
+    }
 }
 
 fn bounds_of(meshes: &[&Mesh]) -> [f32; 6] {
@@ -254,12 +304,23 @@ fn finish(kind: &'static str, bed: Bed, parts: Vec<Part>) -> anyhow::Result<Prev
         bail!("this model is too detailed to preview ({} million triangles)", triangles / 1_000_000);
     }
     let bounds = bounds_of(&parts.iter().map(|p| &p.3).collect::<Vec<_>>());
-    // Share the display budget by each object's part of the detail.
+    let mut parts = parts;
+    for part in &mut parts {
+        sanitize(&mut part.3);
+        weld(&mut part.3);
+    }
+    // Parts of one object touch where the filament changes: their shared
+    // edge stays put, or gaps open up between the colours.
+    let mut per_instance: HashMap<usize, usize> = HashMap::new();
+    for p in &parts {
+        *per_instance.entry(p.4).or_default() += 1;
+    }
+    let locks: Vec<bool> = parts.iter().map(|p| per_instance[&p.4] > 1).collect();
+    let mut meshes: Vec<(&mut Mesh, bool)> = parts.iter_mut().zip(locks).map(|(p, lock)| (&mut p.3, lock)).collect();
+    simplify_plate(&mut meshes, PREVIEW_TRIANGLES);
     let objects = parts
         .into_iter()
         .map(|(name, filament, color, m, instance, object_id)| {
-            let budget = (PREVIEW_TRIANGLES as f64 * m.triangles() as f64 / triangles as f64).ceil() as usize;
-            let m = simplify(&m, budget.max(MIN_OBJECT_TRIANGLES));
             let (positions, origin, step) = encode_positions(&m.positions);
             let (indices, index_bits) = encode_indices(&m.indices, m.positions.len() / 3);
             PreviewObject { instance, triangles: m.triangles(), positions, origin, step, indices, index_bits, name, object_id, filament, color }
@@ -886,14 +947,101 @@ mod tests {
         m
     }
 
+    /// A closed ribbed tube: `ribs` around, `layers` up, wall on the outside only.
+    fn ribbed(ribs: u32, radius: f32, depth: f32, segments: u32, layers: u32) -> Mesh {
+        let mut m = Mesh::default();
+        for l in 0..=layers {
+            for s in 0..segments {
+                let a = s as f32 / segments as f32 * std::f32::consts::TAU;
+                let r = radius + depth * (0.5 + 0.5 * (ribs as f32 * a).cos());
+                m.positions.extend([r * a.cos(), r * a.sin(), l as f32 * 50.0 / layers as f32]);
+            }
+        }
+        for l in 0..layers {
+            for s in 0..segments {
+                let u = (s + 1) % segments;
+                let (a, b, c, d) = (l * segments + s, l * segments + u, (l + 1) * segments + u, (l + 1) * segments + s);
+                m.indices.extend([a, b, c, a, c, d]);
+            }
+        }
+        m
+    }
+
+    fn radial_range(m: &Mesh) -> (f32, f32) {
+        m.positions.as_chunks::<3>().0.iter().map(|p| (p[0] * p[0] + p[1] * p[1]).sqrt()).fold((f32::MAX, 0.0), |(a, b), r| (a.min(r), b.max(r)))
+    }
+
     #[test]
     fn simplifies_to_the_budget() {
-        let m = grid(200); // 80 000 triangles
-        let s = simplify(&m, 5_000);
-        assert!(s.triangles() <= 5_500 && s.triangles() > 1_000, "{} triangles", s.triangles());
-        let (a, b) = (bounds_of(&[&m]), bounds_of(&[&s]));
-        assert!((a[3] - b[3]).abs() < 2.0 && (a[4] - b[4]).abs() < 2.0, "outline kept: {a:?} vs {b:?}");
-        assert_eq!(simplify(&m, 100_000).triangles(), m.triangles(), "small enough meshes are untouched");
+        let mut m = grid(200); // 80 000 triangles
+        let full = m.clone();
+        simplify_plate(&mut [(&mut m, false)], 5_000);
+        assert!(m.triangles() <= 5_500 && m.triangles() >= 2_000, "{} triangles", m.triangles());
+        let (a, b) = (bounds_of(&[&full]), bounds_of(&[&m]));
+        assert!((a[3] - b[3]).abs() < 0.5 && (a[4] - b[4]).abs() < 0.5, "outline kept: {a:?} vs {b:?}");
+        let mut small = full.clone();
+        simplify_plate(&mut [(&mut small, false)], 100_000);
+        assert_eq!(small.triangles(), full.triangles(), "small enough meshes are untouched");
+    }
+
+    /// Averaging points in a grid put them between the two sides of a thin
+    /// wall and tore holes in it (a printed egg shell, 2026-11-05).
+    #[test]
+    fn thin_walls_stay_apart() {
+        let mut m = grid(300);
+        let top = grid(300);
+        let base = (m.positions.len() / 3) as u32;
+        m.positions.extend(top.positions.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2] + 0.3]));
+        m.indices.extend(top.indices.iter().map(|i| i + base));
+        simplify_plate(&mut [(&mut m, false)], 20_000);
+        // Every point is still on one of the two sides, and both sides remain.
+        let wave = |p: &[f32; 3]| (p[0] * 3.0 * 0.37).sin();
+        let lower = m.positions.as_chunks::<3>().0.iter().filter(|p| (p[2] - wave(p)).abs() < 0.01).count();
+        let upper = m.positions.as_chunks::<3>().0.iter().filter(|p| (p[2] - wave(p) - 0.3).abs() < 0.01).count();
+        assert_eq!(lower + upper, m.positions.len() / 3, "nothing between the sides");
+        assert!(lower > 100 && upper > 100, "{lower} + {upper}");
+        assert!(m.triangles() <= 22_000, "{} triangles", m.triangles());
+    }
+
+    /// A dense little part must not take the budget from a big ribbed one.
+    #[test]
+    fn dense_small_parts_leave_the_ribs_alone() {
+        let mut wall = ribbed(56, 28.0, 0.75, 1100, 110);
+        let mut thread = ribbed(3, 9.0, 1.0, 1400, 500);
+        simplify_plate(&mut [(&mut wall, false), (&mut thread, false)], 30_000);
+        let (low, high) = radial_range(&wall);
+        assert!(high - low > 0.7, "rib depth kept: {low}..{high}");
+        assert!(wall.triangles() > thread.triangles() / 4, "{} vs {}", wall.triangles(), thread.triangles());
+        assert!(wall.triangles() + thread.triangles() <= 33_000);
+    }
+
+    #[test]
+    fn repeated_points_become_one() {
+        let mut m = Mesh { positions: vec![0., 0., 0., 1., 0., 0., 0., 1., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0.], ..Default::default() };
+        weld(&mut m);
+        assert_eq!(m.positions.len() / 3, 4);
+        assert_eq!(m.indices, vec![0, 1, 2, 1, 3, 2]);
+    }
+
+    #[test]
+    fn damaged_files_cant_reach_the_simplifier() {
+        let mut m = Mesh { positions: vec![0., 0., 0., f32::NAN, 0., 0., 0., 1., 0.], indices: vec![0, 1, 2, 0, 1, 99], ..Default::default() };
+        sanitize(&mut m);
+        assert_eq!(m.indices, vec![0, 1, 2]);
+        assert_eq!(m.positions[3], 0.0);
+        // Whole files with such triangles get through finish() too.
+        let bad = Mesh { positions: vec![0., 0., 0., 1., 0., 0., 0., 1., 0., 1., 1., 1.], indices: vec![0, 1, 2, 0, 1, 99], ..Default::default() };
+        let pv = finish("model", Bed::rect(1., 1., 1.), vec![(String::new(), 1, None, bad, 0, String::new())]).unwrap();
+        assert_eq!(pv.triangles, 1);
+    }
+
+    #[test]
+    fn painted_parts_keep_their_shared_edge() {
+        let mut m = grid(200);
+        let edge = |m: &Mesh| m.positions.as_chunks::<3>().0.iter().filter(|p| p[0] == 0.0).count();
+        let before = edge(&m);
+        simplify_plate(&mut [(&mut m, true)], 5_000);
+        assert_eq!(edge(&m), before, "border points stay when the part shares them");
     }
 
     #[test]

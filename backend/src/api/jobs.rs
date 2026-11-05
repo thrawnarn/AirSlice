@@ -834,13 +834,13 @@ pub async fn preview(
 
     let source = if use_sliced { "sliced" } else { "input" };
     let printer_key = printer.as_ref().map(|p| p.id.as_str()).unwrap_or("none");
-    // v3: simplified meshes, packed positions, object ids (older caches are a different format).
+    // Bump the version when the format or the simplifying changes (older caches are stale then).
     // A new slice replaces the file under the same name, so the name of its cache says which one it is.
     let stamp = match tokio::fs::metadata(&path).await.ok().and_then(|m| Some((m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs(), m.len()))) {
         Some((at, len)) if use_sliced => format!("-{at}-{len}"),
         _ => String::new(),
     };
-    let cache = dir.join(format!("preview-v3-{source}-{plate}-{printer_key}{stamp}.json"));
+    let cache = dir.join(format!("preview-v4-{source}-{plate}-{printer_key}{stamp}.json"));
     let bytes = match tokio::fs::read(&cache).await {
         Ok(b) => b,
         Err(_) => {
@@ -862,7 +862,7 @@ pub async fn preview(
                 // Previews of earlier slices are of no more use.
                 if let Ok(mut list) = tokio::fs::read_dir(&dir).await {
                     while let Ok(Some(f)) = list.next_entry().await {
-                        if f.file_name().to_string_lossy().starts_with("preview-v3-sliced-") {
+                        if f.file_name().to_string_lossy().starts_with("preview-v4-sliced-") {
                             let _ = tokio::fs::remove_file(f.path()).await;
                         }
                     }
