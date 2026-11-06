@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.5
+## 0.3.6
 
 - The 3D preview keeps ribs, sharp edges and thin walls. Detailed models looked soft, and thin shells (like an egg) showed pits, since the preview merged nearby points. Small, detailed parts no longer take the detail from big ones next to them.
 - Opening a detailed plate's preview the first time takes a few seconds longer. After that it comes from the cache.
