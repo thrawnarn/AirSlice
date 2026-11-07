@@ -3,6 +3,7 @@
 ## Unreleased
 
 - AirSlice is now an MCP server (`/api/mcp`) for AI assistants such as Claude Code. Sign in with an API key. The assistant can look up models, slice, queue, start prints once you confirm the plate is clear, read printer status and history, and get a camera picture.
+- The assistant can print a file in the colours you name ("red", "white PETG"), matched to the closest loaded spool, and list what's loaded. A colour nothing loaded matches is refused instead of guessed.
 
 ## 0.3.6
 

@@ -449,4 +449,9 @@ screenshots).
   keys only (a cookie session is refused, since another page could call tools with it), and the Origin must match the Host.
   Ids for paths go through `path_id`. Print tools need `plate_is_clear: true` (the queue rule). `shape` shortens job
   lists and logs. A new tool needs an entry in `tools()` and in `plan()`; `every_tool_has_a_plan` checks both.
+  `print_file` is the one native tool (calls `jobs::` directly): colours → trays with `colors::pick` (names incl. Swedish,
+  several shades per name, CIELAB ΔE ≤ 35 or the tray's own nearest name; a material word filters), refuses a busy
+  printer, checks colour count against the file and, for pre-sliced files, the slot's material (`mapping::base_type`).
+  Uploads/earlier jobs get `auto` + `auto_print` and then `jobs::slice`, so they start once sliced; links go through
+  `jobs::create` like quick-print. A link's file isn't known up front, so those checks only happen at slicing there.
 - Commit messages end with a `Co-Authored-By` line for Claude.

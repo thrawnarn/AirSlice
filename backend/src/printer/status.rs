@@ -6,7 +6,7 @@ use serde_json::Value;
 /// Global tray id used by the firmware for the external spool.
 pub const EXTERNAL_TRAY: i32 = 254;
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct Tray {
     /// Global id: ams_id * 4 + slot, an AMS HT's unit id, or 254 for the external spool.
     pub id: i32,

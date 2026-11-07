@@ -176,6 +176,30 @@ fn tools() -> Value {
             "annotations": {"openWorldHint": true},
         }),
         json!({
+            "name": "get_available_colors", "title": "Loaded colours",
+            "description": "The filament loaded in each printer right now: tray id, where it is (AMS unit and slot, external spool), material, colour as #RRGGBB and a plain colour name, filament name and how much is left. Use the tray ids or colours for print_file.",
+            "inputSchema": {"type": "object", "properties": {"printer_id": id("Only this printer")}},
+            "annotations": read,
+        }),
+        json!({
+            "name": "print_file", "title": "Print a file in chosen colours",
+            "description": "Start a print right away from a file, in the colours you name: slices with the chosen trays' filament and colour and starts as soon as it's sliced. The file is a model link (MakerWorld, Printables, Thingiverse), an earlier job (job_id, e.g. from list_jobs or list_prints), or the file itself (file_name + file_base64; a link is better for anything big). colors has one entry per filament of the file, in the file's order (a plain STL/OBJ/STEP has one): a colour name (\"red\", \"white PETG\"), a #RRGGBB code or a tray id from get_available_colors. Filaments left out keep the suggested tray. A colour that nothing loaded matches is refused instead of guessed. Returns the job and the trays chosen; poll get_job. Only with the person's word that the plate is clear.",
+            "inputSchema": {"type": "object", "properties": {
+                "plate_is_clear": plate_clear,
+                "colors": {"type": "array", "items": {"type": ["string", "integer"]}, "description": "One per filament, in order: colour name, #RRGGBB or tray id"},
+                "url": id("Link to the model page"),
+                "file_id": id("With url: a file or print profile id from look_up_model"),
+                "job_id": id("An earlier job to print again"),
+                "file_name": id("With file_base64: the file name, ending in .3mf, .stl, .obj, .step or .gcode.3mf"),
+                "file_base64": id("The file's bytes, base64"),
+                "printer_id": id("Printer id; the default printer when omitted"),
+                "plate": {"type": "integer", "minimum": 1},
+                "copies": {"type": "integer", "minimum": 1},
+                "preset": id("A saved slice preset by name, e.g. \"Draft\" (list_presets)"),
+            }, "required": ["plate_is_clear", "colors"]},
+            "annotations": {"openWorldHint": true},
+        }),
+        json!({
             "name": "list_presets", "title": "Slice presets",
             "description": "The saved slice presets (name + settings tweaks), for print_link's preset or slice_job's tweaks.",
             "inputSchema": {"type": "object", "properties": {}},
@@ -290,6 +314,10 @@ fn plan(name: &str, args: &Map<String, Value>) -> Result<Plan, String> {
             call(Method::POST, "/print".into(), Some(body_without(args, &["plate_is_clear"])))
         }
         "list_presets" => call(Method::GET, "/settings/presets".into(), None),
+        "get_available_colors" => match args.contains_key("printer_id") {
+            true => call(Method::GET, format!("/printers/{}", path_id(args, "printer_id")?), None),
+            false => call(Method::GET, "/printers".into(), None),
+        },
         "list_prints" => {
             let limit = get_u64(args, "limit").unwrap_or(20).clamp(1, 500);
             match args.contains_key("printer_id") {
@@ -297,6 +325,7 @@ fn plan(name: &str, args: &Map<String, Value>) -> Result<Plan, String> {
                 false => call(Method::GET, format!("/prints?limit={limit}"), None),
             }
         }
+        "print_file" => Err("print_file runs on its own".into()),
         other => Err(format!("unknown tool {other:?}")),
     }
 }
@@ -317,6 +346,13 @@ fn shape(tool: &str, mut v: Value) -> Value {
         }
     }
     match tool {
+        "get_available_colors" => {
+            let printers = match v {
+                Value::Array(list) => list,
+                one => vec![one],
+            };
+            return Value::Array(printers.iter().map(loaded_colors).collect());
+        }
         "list_jobs" => {
             if let Value::Array(jobs) = &mut v {
                 for j in jobs.iter_mut() {
@@ -337,11 +373,56 @@ fn shape(tool: &str, mut v: Value) -> Value {
     v
 }
 
+/// One printer's loaded trays, from its `PrinterView`.
+fn loaded_colors(p: &Value) -> Value {
+    let status = &p["status"];
+    let trays: Vec<Value> = status["trays"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(status.get("external").filter(|e| e.is_object()))
+        .filter(|t| t["type"].as_str().is_some_and(|k| !k.is_empty()))
+        .map(|t| {
+            let tray = crate::printer::status::Tray {
+                id: t["id"].as_i64().unwrap_or(-1) as i32,
+                ams: t["ams"].as_u64().map(|a| a as u32),
+                slot: t["slot"].as_u64().map(|a| a as u32),
+                kind: t["type"].as_str().unwrap_or_default().into(),
+                color: t["color"].as_str().unwrap_or_default().into(),
+                name: t["name"].as_str().map(str::to_string),
+                remain: t["remain"].as_i64().map(|r| r as i32),
+                ..Default::default()
+            };
+            json!({
+                "tray_id": tray.id, "where": crate::colors::place(&tray), "material": tray.kind,
+                "color": tray.color, "color_name": crate::colors::name(&tray.color), "filament": tray.name,
+                "remain_percent": tray.remain.filter(|r| *r >= 0), "in_use": t["active"],
+            })
+        })
+        .collect();
+    json!({
+        "printer_id": p["id"], "printer": p["name"], "connected": status["connected"],
+        "trays": trays,
+        "note": if status["connected"] == Value::Bool(true) { Value::Null } else { json!("The printer isn't connected, so nothing loaded is known. It may be switched off.") },
+    })
+}
+
 fn text(s: impl Into<String>, is_error: bool) -> Value {
     json!({"content": [{"type": "text", "text": s.into()}], "isError": is_error})
 }
 
 async fn call_tool(state: &Shared, auth: &HeaderMap, name: &str, args: &Map<String, Value>) -> Value {
+    if name == "print_file" {
+        return match print_file(state, args).await {
+            Ok(v) => {
+                let v = shape("print_job", v);
+                let mut out = text(v.to_string(), false);
+                out["structuredContent"] = v;
+                out
+            }
+            Err(e) => text(e, true),
+        };
+    }
     let plan = match plan(name, args) {
         Ok(Plan::Api(c)) => c,
         Ok(Plan::Refuse(why)) => return text(why, true),
@@ -395,6 +476,138 @@ async fn call_tool(state: &Shared, auth: &HeaderMap, name: &str, args: &Map<Stri
         }
         Err(_) => text(String::from_utf8_lossy(&bytes).into_owned(), false),
     }
+}
+
+/// `print_file`: the colours become trays on the chosen printer, then the job
+/// is made (or reused), sliced with those trays and started once sliced, the
+/// way quick-print does it.
+async fn print_file(state: &Shared, args: &Map<String, Value>) -> Result<Value, String> {
+    use crate::{jobs, models::{PrintOptions, SliceOptions}};
+    if let Some(Plan::Refuse(why)) = plate_confirmed(args) {
+        return Err(why);
+    }
+    let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
+    let sources = [s("url").is_some(), args.contains_key("job_id"), s("file_base64").is_some()];
+    if sources.iter().filter(|x| **x).count() != 1 {
+        return Err("give exactly one of url, job_id or file_name + file_base64".into());
+    }
+    let printer_id = match args.contains_key("printer_id") {
+        true => Some(path_id(args, "printer_id")?),
+        false => None,
+    };
+    let printer = jobs::find_printer(state, printer_id.as_deref()).await.map_err(|e| format!("{e:#}"))?;
+    let status = state.printers.status(&printer.id).await;
+    if status.is_busy() {
+        return Err(format!(
+            "{} is busy ({}). Wait until it's done, or slice it and use queue_job.",
+            printer.name,
+            status.state.as_deref().unwrap_or_default()
+        ));
+    }
+    let asked = args.get("colors").and_then(Value::as_array).cloned().unwrap_or_default();
+    if !asked.is_empty() && !status.connected {
+        return Err(format!("{} isn't connected, so its loaded colours aren't known. Is it switched on?", printer.name));
+    }
+    // An upload or an earlier job: the file is here, so the colours can be
+    // checked against it before anything is sliced.
+    let existing = if let Some(data) = s("file_base64") {
+        let name = s("file_name").ok_or("file_name is required with file_base64")?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data.split_once(',').filter(|(h, _)| h.starts_with("data:")).map(|(_, d)| d).unwrap_or(data))
+            .map_err(|e| format!("file_base64 isn't base64: {e}"))?;
+        if bytes.len() as u64 > crate::sources::MAX_DOWNLOAD {
+            return Err("the file is too big".into());
+        }
+        let chunks = futures::stream::iter([Ok::<_, std::convert::Infallible>(bytes::Bytes::from(bytes))]);
+        Some(jobs::create_upload(state, name, chunks).await.map_err(|e| format!("{e:#}"))?)
+    } else if args.contains_key("job_id") {
+        let id = path_id(args, "job_id")?;
+        Some(jobs::get_job(state, &id).await.ok_or("job not found")?)
+    } else {
+        None
+    };
+    let upload_id = existing.as_ref().filter(|_| s("file_base64").is_some()).map(|j| j.id.clone());
+    let saved = |e: String| match &upload_id {
+        Some(id) => format!("{e} (the file is saved as job {id}: call again with job_id)"),
+        None => e,
+    };
+    let inspection = match &existing {
+        Some(j) => Some(j.inspection.clone().ok_or_else(|| saved(j.error.clone().unwrap_or_else(|| "the file couldn't be read".into())))?),
+        None => None,
+    };
+    if let Some(i) = &inspection {
+        let slots = if i.kind == "mesh" { 1 } else { i.filaments.len() };
+        if slots > 0 && asked.len() > slots {
+            return Err(saved(format!("this file has {slots} filament(s), but {} colours were given", asked.len())));
+        }
+    }
+    let usable = status.usable_trays();
+    let loaded = || usable.iter().map(|t| format!("{} {} {} (tray {})", crate::colors::name(&t.color), t.kind, t.color, t.id)).collect::<Vec<_>>().join(", ");
+    let mut chosen = Vec::new();
+    for (n, a) in asked.iter().enumerate() {
+        // A sliced file's G-code is made for its material: only trays of that
+        // material can print it, whatever their colour.
+        let needs = inspection.as_ref().filter(|i| i.kind == "sliced").and_then(|i| i.filaments.get(n)).map(|f| f.kind.clone());
+        let fits: Vec<_> = usable
+            .iter()
+            .copied()
+            .filter(|t| needs.as_deref().is_none_or(|k| crate::printer::mapping::base_type(&t.kind) == crate::printer::mapping::base_type(k)))
+            .collect();
+        let t = crate::colors::pick(a, &fits).map_err(|e| {
+            let why = match &needs {
+                Some(k) => format!("filament {} is sliced for {k}: {e}", n + 1),
+                None => e,
+            };
+            saved(format!("{why}. Loaded on {}: {}", printer.name, loaded()))
+        })?;
+        chosen.push(t.clone());
+    }
+    let tweaks = match s("preset") {
+        Some(name) => {
+            let presets = state.store.read(|d| d.slice_presets.clone()).await.unwrap_or_else(crate::models::default_presets);
+            presets.into_iter().find(|p| p.name.eq_ignore_ascii_case(name)).map(|p| p.tweaks).ok_or_else(|| format!("no preset called {name}"))?
+        }
+        None => Default::default(),
+    };
+    let mut slice = SliceOptions {
+        printer_id: Some(printer.id.clone()),
+        plate: get_u64(args, "plate").map(|p| p as u32),
+        tray_ids: (!chosen.is_empty()).then(|| chosen.iter().map(|t| t.id).collect()),
+        tweaks,
+        ..Default::default()
+    };
+    slice.transform.copies = get_u64(args, "copies").map(|c| c as u32);
+    let err = |e: anyhow::Error| format!("{e:#}");
+
+    let job = match existing {
+        None => jobs::create(state, s("url").unwrap_or_default(), s("file_id"), Some((slice, PrintOptions::default()))).await.map_err(err)?,
+        Some(job) => {
+            // Print once sliced (see the end of `jobs::slice`).
+            jobs::update_job(state, &job.id, |j| {
+                j.auto = true;
+                j.auto_print = Some(PrintOptions::default());
+            })
+            .await
+            .map_err(err)?;
+            match jobs::slice(state, &job.id, slice).await {
+                Ok(j) => j,
+                Err(e) => {
+                    let _ = jobs::update_job(state, &job.id, |j| j.auto = false).await;
+                    return Err(saved(err(e)));
+                }
+            }
+        }
+    };
+    let trays: Vec<Value> = asked
+        .iter()
+        .zip(&chosen)
+        .enumerate()
+        .map(|(i, (a, t))| json!({"filament": i + 1, "asked": a, "tray_id": t.id, "where": crate::colors::place(t), "material": t.kind, "color": t.color, "color_name": crate::colors::name(&t.color)}))
+        .collect();
+    let mut v = serde_json::to_value(&job).map_err(|e| e.to_string())?;
+    v["chosen_trays"] = Value::Array(trays);
+    v["next"] = json!("Poll get_job: it downloads, slices and starts by itself. State \"started\" means printing; \"failed\" has the reason in error.");
+    Ok(v)
 }
 
 fn rpc_error(id: Value, code: i64, message: &str) -> Value {
@@ -513,6 +726,9 @@ mod tests {
             let mut a = Map::new();
             for k in required {
                 a.insert(k.into(), if k == "plate_is_clear" { Value::Bool(true) } else { json!("abc") });
+            }
+            if name == "print_file" {
+                continue;
             }
             if name == "control_printer" {
                 a.insert("action".into(), json!("pause"));

@@ -2,6 +2,7 @@ mod api;
 mod auth;
 mod camera;
 mod bambu_cloud;
+mod colors;
 mod config;
 mod diagnostics;
 mod error;

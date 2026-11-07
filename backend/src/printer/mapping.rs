@@ -36,7 +36,7 @@ pub fn color_distance(a: &str, b: &str) -> i32 {
 }
 
 /// "PLA Basic", "PLA-CF", "PLA+" -> "PLA"; used as a fallback match.
-fn base_type(t: &str) -> String {
+pub fn base_type(t: &str) -> String {
     t.trim()
         .to_uppercase()
         .split(|c: char| !c.is_ascii_alphanumeric())
