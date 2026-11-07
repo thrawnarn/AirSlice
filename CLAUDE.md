@@ -443,4 +443,10 @@ screenshots).
 - GitHub: https://github.com/thrawnarn/AirSlice (private). Image: `ghcr.io/thrawnarn/airslice`
   (lowercase), referenced as `image:` in `airslice/config.yaml`; the GHCR package must be public for
   Home Assistant to pull it.
+- MCP server (`mcp.rs`, `POST api/mcp`): stateless Streamable HTTP, JSON answers only (GET/DELETE 405),
+  protocol versions 2025-06-18/2025-03-26/2024-11-05. Each tool is planned into a REST call (`plan`) and run through
+  `api::router` with the caller's own key headers (`tower::oneshot`), so auth and validation are the handlers' own. API
+  keys only (a cookie session is refused, since another page could call tools with it), and the Origin must match the Host.
+  Ids for paths go through `path_id`. Print tools need `plate_is_clear: true` (the queue rule). `shape` shortens job
+  lists and logs. A new tool needs an entry in `tools()` and in `plan()`; `every_tool_has_a_plan` checks both.
 - Commit messages end with a `Co-Authored-By` line for Claude.

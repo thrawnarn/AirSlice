@@ -14,6 +14,7 @@ mod power;
 mod jobs;
 mod preview;
 mod prints;
+mod mcp;
 mod models;
 mod printer;
 mod slicer;

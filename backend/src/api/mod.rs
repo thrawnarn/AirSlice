@@ -108,6 +108,7 @@ pub fn router(state: Shared) -> Router<Shared> {
         .route("/jobs/{id}/preview", get(jobs::preview))
         .route("/jobs/{id}/tray-suggestion", get(jobs::tray_suggestion))
         .route("/print", post(jobs::quick_print))
+        .route("/mcp", post(crate::mcp::post).get(crate::mcp::other).delete(crate::mcp::other))
         .layer(from_fn_with_state(state, crate::auth::require_auth));
 
     public.merge(protected)

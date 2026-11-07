@@ -112,6 +112,10 @@ sensor:
 
 The full API is described in the project README.
 
+## AI assistants (MCP)
+
+AirSlice is also an MCP server at `/api/mcp` on the direct port (or your reverse proxy), for assistants such as Claude Code. Create an API key for it and send it as `Authorization: Bearer as_…`. The assistant can look up models, slice, queue and read printer status. It can start a print only when it says you confirmed the plate is clear. See the README for the setup command and the list of tools.
+
 ## Troubleshooting
 
 - **The connection test says the printer refused a command, or a print doesn't start (HMS 0500_0500_0001_0007)**: turn on **Developer Mode** on the printer (Settings → Network, after LAN Only Mode).

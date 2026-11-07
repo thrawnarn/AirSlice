@@ -1335,6 +1335,15 @@ function ApiKeys() {
           </pre>
           <p className="faint small">{tr("Then poll")} <code>GET api/jobs/&lt;id&gt;</code>{tr(". Printer status:")} <code>{tr("GET api/printers")}</code>.</p>
         </details>
+        <details style={{ marginTop: 8 }}>
+          <summary className="small muted">{tr("AI assistants (MCP)")}</summary>
+          <p className="faint small" style={{ marginTop: 8 }}>{tr("Assistants such as Claude Code can look up models, slice and print through AirSlice's MCP server. Create a key for the assistant and add the server, for example:")}</p>
+          <pre className="key-reveal" style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>
+            {`claude mcp add --transport http airslice ${appUrl()}api/mcp \\
+  --header "Authorization: Bearer as_…"`}
+          </pre>
+          <p className="faint small">{tr("It can start a print only when it says you confirmed the plate is clear.")}</p>
+        </details>
       </div>
     </>
   );

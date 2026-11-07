@@ -196,6 +196,21 @@ It picks the linked profile (or one made for your printer), slices, maps filamen
 
 AMS mapping: one entry per filament slot in the project (`filament_slots`); the value is `ams_index * 4 + slot`, `254` for the external spool, `-1` for unused.
 
+## AI assistants (MCP)
+
+AirSlice is also an [MCP](https://modelcontextprotocol.io) server, so an AI assistant can look up models, slice, queue and start prints and read printer status for you. The endpoint is `<base>/api/mcp` (Streamable HTTP, JSON answers, no sessions), and it takes only an API key, not the browser sign-in. For example, in Claude Code:
+
+```sh
+claude mcp add --transport http airslice https://print.home.example.com/api/mcp \
+  --header "Authorization: Bearer as_…"
+```
+
+Any MCP client that can send a header works the same way. Clients that only sign in with OAuth (such as claude.ai's custom connectors) aren't supported yet.
+
+Tools: `list_printers`, `get_printer`, `camera_snapshot`, `control_printer`, `look_up_model`, `list_collections`, `get_collection`, `create_job`, `slice_job`, `get_job`, `list_jobs`, `print_job`, `queue_job`, `get_queue`, `start_next`, `print_link`, `list_presets`, `list_prints`. Each one makes the same API request the app makes, with the same key. `print_job`, `start_next` and `print_link` refuse unless called with `plate_is_clear: true`, and their descriptions tell the assistant to ask you first. A camera picture doesn't count as asking you.
+
+What the tools return (printer status, job details, print history) goes to the assistant's provider. Give the assistant its own key, so you can delete just that one.
+
 ## Home Assistant integration
 
 Optional, and separate from the add-on: it also works with AirSlice running in Docker.

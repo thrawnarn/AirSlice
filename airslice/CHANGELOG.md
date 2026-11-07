@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- AirSlice is now an MCP server (`/api/mcp`) for AI assistants such as Claude Code. Sign in with an API key. The assistant can look up models, slice, queue, start prints once you confirm the plate is clear, read printer status and history, and get a camera picture.
+
 ## 0.3.6
 
 - The 3D preview keeps ribs, sharp edges and thin walls. Detailed models looked soft, and thin shells (like an egg) showed pits, since the preview merged nearby points. Small, detailed parts no longer take the detail from big ones next to them.
