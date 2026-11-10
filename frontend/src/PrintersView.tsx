@@ -2,7 +2,8 @@ import { DryingControl } from "./Drying";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { api } from "./api";
 import type { FtpDataMode, JobRef, MachineProfile, Printer, ProfileChoices, QueueEntry, Tray } from "./types";
-import { TraysSheet, usePlates } from "./Trays";
+import { TraysSheet, loadedTrays, usePlates } from "./Trays";
+import { filamentWarnings, useFilamentCheck } from "./FilamentCheck";
 import { BOOT_SECS, bootState, CameraView, Notice, Sheet, fmtLeft, Spool, fmtDuration, isBusy, printerState, timeAgo, toast, trayLabel, usePoll, remoteImg } from "./ui";
 import { lang, locale, tr } from "./i18n";
 
@@ -573,8 +574,11 @@ function QueuePanel({ printer, queue, reload }: { printer: Printer; queue: Queue
   const next = queue[0];
   const name = next.plate_label ? `${next.title}, ${next.plate_label}` : next.title;
 
+  const check = useFilamentCheck(next.job_id);
+  const warnings = filamentWarnings(check, loadedTrays(printer));
+
   async function start() {
-    if (!window.confirm(tr("Start “{0}” on {1}? Make sure the build plate is clear.", [name, printer.name]))) return;
+    if (!window.confirm([tr("Start “{0}” on {1}? Make sure the build plate is clear.", [name, printer.name]), ...warnings].join("\n\n"))) return;
     setBusy(true);
     try {
       await api.post(`printers/${printer.id}/start-next`);
@@ -603,6 +607,11 @@ function QueuePanel({ printer, queue, reload }: { printer: Printer; queue: Queue
           <span className={`small ${next.filament_ok ? "faint" : "queue-warn"}`}>
             {next.filament_ok ? fmtDuration(next.prediction_secs) : tr("Filament not loaded — tap to choose trays")}
           </span>
+          {warnings.map((w) => (
+            <span key={w} className="small queue-warn">
+              {w}
+            </span>
+          ))}
         </span>
       </a>
       {free && (

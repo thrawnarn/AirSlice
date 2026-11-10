@@ -53,6 +53,12 @@ const SV: &[(&str, &str)] = &[
     ("Lost contact with {0}", "Tappade kontakten med {0}"),
     ("The print may still be running. Check the printer.", "Utskriften kan fortfarande pågå. Titta till skrivaren."),
     ("{0} is back", "{0} är tillbaka"),
+    ("{0} may run out of filament", "{0} kan få slut på filament"),
+    ("{0} has about {1} g left and this print needs about {2} g. No other tray has the same filament.", "{0} har cirka {1} g kvar och den här utskriften behöver cirka {2} g. Inget annat fack har samma filament."),
+    ("{0} has about {1} g left and this print needs about {2} g. {3} has the same filament, but not enough to finish.", "{0} har cirka {1} g kvar och den här utskriften behöver cirka {2} g. {3} har samma filament, men inte tillräckligt för att bli klar."),
+    ("{0} has about {1} g left and this print needs about {2} g. {3} has the same filament, but filament backup is off on the printer.", "{0} har cirka {1} g kvar och den här utskriften behöver cirka {2} g. {3} har samma filament, men filamentbackup är avstängd på skrivaren."),
+    ("{0} is almost done", "{0} är nästan klar"),
+    ("{0} — about {1} min left", "{0} — cirka {1} min kvar"),
     ("tomorrow {0}", "i morgon {0}"),
     ("Notifications work.", "Notiserna fungerar."),
 ];

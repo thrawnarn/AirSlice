@@ -301,6 +301,13 @@ screenshots).
   flips PAUSE/RUNNING within seconds while someone resumes, hence the hold and the 15 min per-code
   repeat limit. Pausing from AirSlice isn't reported (`paused_by_us`). To test: send `pause` to the fake
   printer's broker (plain MQTT on 1884) from another client, with `DRY_HMS` for the message.
+- Filament check (`filament_check.rs`, `POST jobs/{id}/filament-check`; print page, queue card, start and
+  queue notifications): grams left = Spoolman, else AMS `remain` %. A real P1S with the remaining estimate off
+  (home_flag 0x80) reports `remain` -1 on every tray, so without Spoolman the amount is unknown and the UI says so.
+  A short tray is `covered` when other AMS trays with the same type, colour and `tray_info_idx` hold the rest
+  (beyond their own share) and the backup setting is on (`home_flag` 0x400, on for a real P1S). Backups across AMS
+  units and to/from an AMS HT aren't confirmed on a printer; forum reports say across units works.
+- `almost_done` (own toggle) fires once at 1–5 min left, RUNNING, layer ≥ 2 and 50 %+ (`PrintStart::almost_done_sent`).
 - Notification channels (`notify.rs`): `ha`, `telegram` (sendPhoto multipart / sendMessage;
   `AIRSLICE_TELEGRAM_API` points tests at a mock), `ntfy` (PUT the JPEG with
   Title/Message/Filename headers, non-ASCII as RFC 2047 base64). Tokens never go back

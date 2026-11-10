@@ -450,6 +450,8 @@ pub struct NotifyTarget {
     pub first_layer: bool,
     /// The printer needs a person: paused, a serious message, contact lost.
     pub attention: bool,
+    /// Five minutes before the end.
+    pub almost_done: bool,
 }
 
 impl Default for NotifyTarget {
@@ -476,6 +478,7 @@ impl Default for NotifyTarget {
             queue: true,
             first_layer: true,
             attention: true,
+            almost_done: true,
         }
     }
 }
@@ -644,6 +647,9 @@ pub struct PrintStart {
     /// The first layer is down (notified once).
     #[serde(default)]
     pub first_layer_done: bool,
+    /// The last five minutes have been announced.
+    #[serde(default)]
+    pub almost_done_sent: bool,
     /// The plug's energy meter at the start (kWh), and what the print used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub energy_start: Option<f64>,

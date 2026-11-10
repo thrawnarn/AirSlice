@@ -341,6 +341,22 @@ pub async fn cost_with_trays(State(state): State<Shared>, Path(id): Path<String>
     Ok(Json(crate::spoolman::cost(&use_g, &prices, hours, &costs, false)))
 }
 
+#[derive(Deserialize)]
+pub struct FilamentCheckBody {
+    /// The trays on screen; absent = the queued ones, or the printer's match.
+    #[serde(default)]
+    ams_mapping: Option<Vec<i32>>,
+}
+
+/// Whether the spools will last for this print.
+pub async fn filament_check(State(state): State<Shared>, Path(id): Path<String>, Json(body): Json<FilamentCheckBody>) -> ApiResult<Json<crate::filament_check::Check>> {
+    let job = jobs::get_job(&state, &id).await.ok_or_else(|| AppError::not_found("job not found"))?;
+    let slice = job.slice.as_ref().ok_or_else(|| AppError::bad_request("this job isn't sliced"))?;
+    let queued = state.store.read(|d| d.queue.iter().find(|q| q.job_id == id).map(|q| q.printer_id.clone())).await;
+    let printer = queued.unwrap_or_else(|| slice.printer_id.clone());
+    Ok(Json(crate::filament_check::for_job(&state, &job, &printer, body.ams_mapping).await))
+}
+
 // ------------------------------------------------------------------ queue
 
 #[derive(Serialize)]

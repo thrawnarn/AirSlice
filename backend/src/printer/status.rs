@@ -5,6 +5,9 @@ use serde_json::Value;
 
 /// Global tray id used by the firmware for the external spool.
 pub const EXTERNAL_TRAY: i32 = 254;
+/// `home_flag` bit for the AMS's filament backup (ha-bambulab's list; on for
+/// a real P1S with it turned on, 2026-11-10).
+const AMS_AUTO_SWITCH: i64 = 0x400;
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct Tray {
@@ -58,6 +61,9 @@ pub struct StatusView {
     pub hms: Vec<String>,
     /// The same codes with what's known about them, for the printer card.
     pub problems: Vec<Problem>,
+    /// The AMS's filament backup setting (carry on from a spool of the same
+    /// filament when one runs out), when the printer reports it.
+    pub ams_backup: Option<bool>,
     pub has_ams: bool,
     pub trays: Vec<Tray>,
     pub external: Option<Tray>,
@@ -325,6 +331,7 @@ pub fn view(print: &Value) -> StatusView {
         .filter_map(|e| Some(hms_code(int(e.get("attr"))?, int(e.get("code"))?)))
         .collect();
     s.problems = s.hms.iter().map(|c| Problem::new(c)).collect();
+    s.ams_backup = int(print.get("home_flag")).map(|f| f & AMS_AUTO_SWITCH != 0);
     if let Some(lights) = print.get("lights_report").and_then(|l| l.as_array()) {
         s.chamber_light = lights
             .iter()

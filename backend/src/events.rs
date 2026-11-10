@@ -2,6 +2,7 @@
 
 use crate::{
     attention::Alert,
+    filament_check,
     i18n::{Lang, clock, money, t},
     jobs::fmt_duration,
     models::{Cost, Job, JobState, PrintOutcome, Printer, now},
@@ -139,6 +140,22 @@ pub async fn print_started(state: &Shared, job: &Job) {
     // shows an empty bed.
     let pics = Pictures { plate: plate_picture(state, job), site: site_pictures(job), ..Default::default() };
     notify::send_with_pictures(state, |s| s.printing, text, pics);
+    // Queue and automatic starts have no print page to warn on.
+    if let Some(pr) = &job.print {
+        let check = filament_check::for_job(state, job, &pr.printer_id, Some(pr.ams_mapping.clone())).await;
+        let short = short_lines(state, &pr.printer_id, &check).await;
+        if !short.is_empty() {
+            let who = printer_name(state, job).await;
+            let name = title(job);
+            let text: notify::Text = Box::new(move |l| {
+                let mut lines = vec![name.clone()];
+                lines.extend(short.iter().map(|s| short_text(l, s)));
+                (t(l, "{0} may run out of filament", &[&who]), lines.join("\n"))
+            });
+            let pics = Pictures { plate: plate_picture(state, job), site: site_pictures(job), ..Default::default() };
+            notify::send_with_pictures(state, |s| s.attention, text, pics);
+        }
+    }
 }
 
 /// The first layer is down: a picture shows whether it sticks.
@@ -259,6 +276,8 @@ pub async fn print_ended(state: &Shared, job: &Job) {
         let next_name = title(&next);
         let next_time = next.slice.as_ref().and_then(|s| s.prediction_secs).map(fmt_duration);
         let all = (waiting > 1 && total > 0).then(|| fmt_duration(total));
+        let check = filament_check::for_job(state, &next, &pid, None).await;
+        let short = short_lines(state, &pid, &check).await;
         let text: notify::Text = Box::new(move |l| {
             let head = if waiting == 1 {
                 t(l, "{0} is free — 1 print waiting", &[&printer])
@@ -272,6 +291,7 @@ pub async fn print_ended(state: &Shared, job: &Job) {
             if let Some(a) = &all {
                 lines.push(t(l, "{0} in the queue", &[a]));
             }
+            lines.extend(short.iter().map(|s| short_text(l, s)));
             lines.push(t(l, "Clear the plate, then start it.", &[]));
             (head, lines.join("\n"))
         });
@@ -292,6 +312,52 @@ pub async fn problem(state: &Shared, job: &Job) {
         (t(l, "Problem with {0}", &[&name]), error.clone().unwrap_or_else(|| t(l, "Something went wrong", &[])))
     });
     notify::send_with_pictures(state, |s| s.problems, text, pics);
+}
+
+/// A tray that won't last, with what's needed to say so in any language.
+struct ShortLine {
+    tray: String,
+    left: String,
+    need: String,
+    backups: String,
+    backup_off: bool,
+}
+
+async fn short_lines(state: &Shared, printer_id: &str, check: &filament_check::Check) -> Vec<ShortLine> {
+    let status = state.printers.status(printer_id).await;
+    let trays = status.usable_trays();
+    let name = |id: i32| trays.iter().find(|t| t.id == id).map(|t| t.label()).unwrap_or_else(|| format!("tray {}", id + 1));
+    check
+        .short
+        .iter()
+        .filter(|s| !s.covered)
+        .map(|s| ShortLine {
+            tray: name(s.tray),
+            left: format!("{:.0}", s.left_g),
+            need: format!("{:.0}", s.need_g.ceil()),
+            backups: s.backups.iter().map(|b| name(*b)).collect::<Vec<_>>().join(", "),
+            backup_off: s.backup_off,
+        })
+        .collect()
+}
+
+fn short_text(l: Lang, s: &ShortLine) -> String {
+    if s.backup_off {
+        t(l, "{0} has about {1} g left and this print needs about {2} g. {3} has the same filament, but filament backup is off on the printer.", &[&s.tray, &s.left, &s.need, &s.backups])
+    } else if s.backups.is_empty() {
+        t(l, "{0} has about {1} g left and this print needs about {2} g. No other tray has the same filament.", &[&s.tray, &s.left, &s.need])
+    } else {
+        t(l, "{0} has about {1} g left and this print needs about {2} g. {3} has the same filament, but not enough to finish.", &[&s.tray, &s.left, &s.need, &s.backups])
+    }
+}
+
+/// A few minutes left: time to go and get it.
+pub async fn almost_done(state: &Shared, job: &Job, minutes: i64) {
+    let printer = printer_name(state, job).await;
+    let name = title(job);
+    let text: notify::Text = Box::new(move |l| (t(l, "{0} is almost done", &[&printer]), t(l, "{0} — about {1} min left", &[&name, &minutes])));
+    let pics = Pictures { camera: printer_of(state, job).await, plate: plate_picture(state, job), both: false, site: Vec::new() };
+    notify::send_with_pictures(state, |s| s.almost_done, text, pics);
 }
 
 /// One of the printer's messages, in the reader's language when Bambu has it.

@@ -1428,6 +1428,14 @@ pub fn print_update(status: &crate::printer::status::StatusView, task: &str) -> 
     }
 }
 
+/// Minutes left when a print is in its last five. While it heats up the
+/// printer can still report the previous print's numbers, hence layer and
+/// percent.
+fn almost_done(s: &crate::printer::status::StatusView) -> Option<i64> {
+    let printing = s.state.as_deref() == Some("RUNNING") && s.layer.unwrap_or(0) >= 2 && s.percent.unwrap_or(0) >= 50;
+    s.remaining_minutes.filter(|m| printing && (1..=5).contains(m))
+}
+
 /// Follow started prints until the printer says how they ended. Runs for
 /// the life of the server; results are stored, live progress is not.
 pub async fn watch_prints(state: Shared) {
@@ -1464,6 +1472,17 @@ pub async fn watch_prints(state: Shared) {
                         .await
                     {
                         crate::events::first_layer(&state, &j).await;
+                    }
+                    if !print.almost_done_sent
+                        && let Some(minutes) = almost_done(&status)
+                        && let Ok(j) = update_job(&state, &job.id, |j| {
+                            if let Some(pr) = j.print.as_mut() {
+                                pr.almost_done_sent = true;
+                            }
+                        })
+                        .await
+                    {
+                        crate::events::almost_done(&state, &j, minutes).await;
                     }
                     // Keep the last progress for partial filament use.
                     if print.progress != Some(p) && (p % 5 == 0 || print.progress.is_none()) {
@@ -1761,6 +1780,7 @@ async fn send(
                     error_code: None,
                     progress: None,
                     first_layer_done: false,
+                    almost_done_sent: false,
                     energy_start,
                     energy_kwh: None,
                     layer: None,
@@ -2322,6 +2342,17 @@ pub async fn delete(state: &Shared, id: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn almost_done_waits_for_the_last_five_minutes_of_a_real_print() {
+        use crate::printer::status::StatusView;
+        let s = |state: &str, pct, layer, left| StatusView { state: Some(state.into()), percent: Some(pct), layer: Some(layer), remaining_minutes: Some(left), ..Default::default() };
+        assert_eq!(almost_done(&s("RUNNING", 97, 120, 5)), Some(5));
+        assert_eq!(almost_done(&s("RUNNING", 90, 110, 6)), None);
+        assert_eq!(almost_done(&s("PAUSE", 97, 120, 4)), None);
+        assert_eq!(almost_done(&s("RUNNING", 100, 125, 0)), None, "already over");
+        assert_eq!(almost_done(&s("RUNNING", 1, 1, 3)), None, "numbers from the print before");
+    }
+
     use super::*;
     use crate::models::FtpDataMode;
 

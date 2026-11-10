@@ -3,10 +3,11 @@ import { api, findModelLink } from "./api";
 import type { ConnectionSettings, FilamentInfo, Job, MeshTransform, NextPlateSuggestion, PlateInfo, SliceTweaks, Printer, ProfileChoices, QueueEntry, ResolvedModel, SlicedFile, Spool as SpoolmanSpool, Suggestion, Tray, TrayFilament } from "./types";
 import { CollectionPicker } from "./CollectionsView";
 import { PrintControls } from "./PrintersView";
-import { TrayPicker, TraysSheet, loadedTrays, money, plateName, spoolLine, usePlates, usePrinterSpools } from "./Trays";
+import { TrayPicker, TraysSheet, loadedTrays, money, plateName, usePlates, usePrinterSpools } from "./Trays";
 import { TweakPicker, cleanTweaks, describeTweaks } from "./Tweaks";
 import { CameraView, Notice, Sheet, Spool, fmtLeft, trayLabel, fmtDuration, fmtMinutes, isBusy, printerState, toast, usePoll, remoteImg } from "./ui";
 import { locale, tr } from "./i18n";
+import { FilamentNotices, useFilamentCheck } from "./FilamentCheck";
 import { FileRow, ModelPanel, SOURCE_NAMES, shortModel } from "./ModelView";
 import { QueueBoard } from "./Queue";
 
@@ -1296,24 +1297,7 @@ function PrintOptions({ job, printers, onChange }: { job: Job; printers: Printer
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mappingKey, mappingTouched, job.id]);
   const cost = pickedCost !== undefined ? pickedCost : (job.cost_estimate ?? null);
-  // Spools that don't hold enough for this print (Spoolman).
-  const short = used.flatMap((f) => {
-    const tray = mapping?.[f.id - 1];
-    // One warning per tray, even when several filaments use it.
-    if (tray == null || tray < 0 || f.id !== used.find((g) => mapping?.[g.id - 1] === tray)?.id) return [];
-    const need = used.filter((g) => mapping?.[g.id - 1] === tray).reduce((s, g) => s + g.used_g, 0);
-    const sp = job.spools?.[tray];
-    if (sp && sp.remaining_g != null) {
-      return sp.remaining_g < need ? [tr("{0} — this print needs about {1} g from it.", [spoolLine(sp).replace(/^Spoolman /, tr("Spool ")), Math.ceil(need)])] : [];
-    }
-    // Without Spoolman: the AMS's estimate for Bambu spools (percent of the spool).
-    const t = trays.find((x) => x.id === tray);
-    if (t?.remain == null) return [];
-    const left = (t.remain / 100) * (t.spool_g || 1000);
-    return left < need
-      ? [tr("{0} has about {1} g left ({2}%) — this print needs about {3} g from it.", [trayLabel(t), Math.round(left), t.remain, Math.ceil(need)])]
-      : [];
-  });
+  const filamentCheck = useFilamentCheck(job.id, mapping);
   const mappedColor = useCallback(
     (filament: number, fileColor: string | null) => {
       const t = trays.find((x) => x.id === mapping?.[filament - 1]);
@@ -1456,11 +1440,7 @@ function PrintOptions({ job, printers, onChange }: { job: Job; printers: Printer
           </div>
         )}
       </div>
-      {short.map((w) => (
-        <Notice key={w} tone="warn">
-          {w}
-        </Notice>
-      ))}
+      <FilamentNotices check={filamentCheck} trays={trays} />
       {colourCountChanged && !busy && mapping && (
         <Notice tone="warn">
           {tr("These numbers are for {0} colours, and these trays give {1}.", [slicedColours, chosenColours])}{" "}
@@ -1755,6 +1735,7 @@ function Queued({ job, printers, onChange }: { job: Job; printers: Printer[]; on
 
   const free = !!printer && printer.status.connected && !isBusy(printer.status);
   const first = entry?.position === 1;
+  const filamentCheck = useFilamentCheck(job.id);
 
   async function act(fn: () => Promise<Job>) {
     setBusy(true);
@@ -1774,6 +1755,7 @@ function Queued({ job, printers, onChange }: { job: Job; printers: Printer[]; on
         {tr("Queued on {0}{1}", [printer?.name ?? tr("the printer"), entry ? (entry.position === 1 ? tr(", next in line.") : tr(", number {0} in line.", [entry.position])) : "."])}
         {free && first && ` ${tr("{0} is free. Clear the build plate, then start.", [printer!.name])}`}
       </Notice>
+      {printer && <FilamentNotices check={filamentCheck} trays={loadedTrays(printer)} />}
       {free && first && (
         <>
           <button
