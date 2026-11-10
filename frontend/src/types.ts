@@ -126,6 +126,7 @@ export interface NotifyTarget {
   problems: boolean;
   queue: boolean;
   first_layer: boolean;
+  attention: boolean;
 }
 
 /** Retries and waiting for offline printers (Settings). */

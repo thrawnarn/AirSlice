@@ -448,6 +448,8 @@ pub struct NotifyTarget {
     pub queue: bool,
     /// After the first layer, so a bad start can be stopped early.
     pub first_layer: bool,
+    /// The printer needs a person: paused, a serious message, contact lost.
+    pub attention: bool,
 }
 
 impl Default for NotifyTarget {
@@ -473,6 +475,7 @@ impl Default for NotifyTarget {
             problems: true,
             queue: true,
             first_layer: true,
+            attention: true,
         }
     }
 }

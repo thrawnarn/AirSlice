@@ -536,6 +536,7 @@ export const sv: Record<string, string> = {
   "The finished print": "Den färdiga utskriften",
   "The first layer is done (check that it sticks)": "Första lagret är klart (kontrollera att det fastnar)",
   "The last print is done. ": "Den senaste utskriften är klar. ",
+  "The printer needs you (paused, out of filament, an error, lost contact)": "Skrivaren behöver dig (pausad, slut på filament, ett fel, tappad kontakt)",
   "The next print needs filament that isn't loaded. Open it to choose trays, or load the filament first.": "Nästa utskrift behöver filament som inte är laddat. Öppna den för att välja fack, eller ladda filamentet först.",
   "The password is set with ADMIN_PASSWORD in the container settings.": "Lösenordet anges med ADMIN_PASSWORD i containerns inställningar.",
   "The passwords don't match.": "Lösenorden är inte lika.",

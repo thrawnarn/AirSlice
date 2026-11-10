@@ -295,6 +295,12 @@ screenshots).
   target "1"; the old fields are read but never written. Tokens are kept per target id.
   The camera picture is taken once per event and shared. Test: `POST
   settings/notify/test?target=<id>` with the settings on screen.
+- A paused print isn't a failed job, so `attention.rs` watches every printer (5 s, pure `step`):
+  PAUSE held 10 s, new serious/fatal HMS held 10 s, contact lost 5 min during a print and back
+  (event `attention`). A real P1S out of filament sets PAUSE + HMS and leaves `print_error` 0, and it
+  flips PAUSE/RUNNING within seconds while someone resumes, hence the hold and the 15 min per-code
+  repeat limit. Pausing from AirSlice isn't reported (`paused_by_us`). To test: send `pause` to the fake
+  printer's broker (plain MQTT on 1884) from another client, with `DRY_HMS` for the message.
 - Notification channels (`notify.rs`): `ha`, `telegram` (sendPhoto multipart / sendMessage;
   `AIRSLICE_TELEGRAM_API` points tests at a mock), `ntfy` (PUT the JPEG with
   Title/Message/Filename headers, non-ASCII as RFC 2047 base64). Tokens never go back

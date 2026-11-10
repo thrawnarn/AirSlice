@@ -214,7 +214,11 @@ impl PrinterManager {
             }
             other => bail!("unknown action {other:?}"),
         };
-        self.publish(id, payload).await
+        self.publish(id, payload).await?;
+        if action == "pause" {
+            crate::attention::paused_by_us(id);
+        }
+        Ok(())
     }
 
     /// Tell the printer what is loaded in a tray, as its own filament menu

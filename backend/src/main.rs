@@ -1,4 +1,5 @@
 mod api;
+mod attention;
 mod auth;
 mod camera;
 mod bambu_cloud;
@@ -62,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
     printers.set_settings(state.store.read(|d| d.connection).await);
     jobs::recover(&state).await?;
     tokio::spawn(jobs::watch_prints(state.clone()));
+    tokio::spawn(attention::watch(state.clone()));
     tokio::spawn(jobs::clean_files_hourly(state.clone()));
     tokio::spawn(power::watch(state.clone()));
     tokio::spawn(printer::hms::keep_fresh(state.clone()));

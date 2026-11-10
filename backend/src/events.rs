@@ -1,10 +1,12 @@
 //! Things that happen to jobs, for notifications (and Spoolman).
 
 use crate::{
+    attention::Alert,
     i18n::{Lang, clock, money, t},
     jobs::fmt_duration,
-    models::{Cost, Job, JobState, PrintOutcome, now},
+    models::{Cost, Job, JobState, PrintOutcome, Printer, now},
     notify::{self, Pictures},
+    printer::status::{Problem, StatusView},
     state::Shared,
 };
 use std::{collections::HashMap, sync::OnceLock};
@@ -290,6 +292,64 @@ pub async fn problem(state: &Shared, job: &Job) {
         (t(l, "Problem with {0}", &[&name]), error.clone().unwrap_or_else(|| t(l, "Something went wrong", &[])))
     });
     notify::send_with_pictures(state, |s| s.problems, text, pics);
+}
+
+/// One of the printer's messages, in the reader's language when Bambu has it.
+fn problem_text(l: Lang, p: &Problem) -> String {
+    let code: &'static str = if l == Lang::Sv { "sv" } else { "en" };
+    p.texts.get(&code).or_else(|| p.texts.get(&"en")).cloned().unwrap_or_else(|| format!("HMS {}", p.code))
+}
+
+/// A printer needs a person (see `attention`).
+pub async fn attention(state: &Shared, printer: &Printer, job: Option<&Job>, status: &StatusView, alert: Alert) {
+    let who = printer.name.clone();
+    let name = job.map(title);
+    let plate = job.and_then(|j| plate_picture(state, j));
+    let picture = Pictures { camera: Some(printer.clone()), plate: plate.clone(), both: false, site: Vec::new() };
+    let no_camera = Pictures { plate, ..Default::default() };
+    let (error, percent, layer, total) = (status.print_error, status.percent, status.layer, status.total_layers);
+    let (text, pics): (notify::Text, Pictures) = match alert {
+        Alert::Paused(problems) => (
+            Box::new(move |l| {
+                let mut lines: Vec<String> = name.iter().cloned().collect();
+                lines.extend(problems.iter().map(|p| problem_text(l, p)));
+                if problems.is_empty() {
+                    lines.push(match error {
+                        Some(code) => t(l, "The printer reports error {0}.", &[&format!("{code:08X}")]),
+                        None => t(l, "The printer doesn't say why. It may have been paused on its screen.", &[]),
+                    });
+                }
+                match (percent, layer, total) {
+                    (Some(p), Some(n), Some(of)) if of > 0 => lines.push(t(l, "Paused at {0} %, layer {1} of {2}", &[&p, &n, &of])),
+                    (Some(p), _, _) => lines.push(t(l, "Paused at {0} %", &[&p])),
+                    _ => {}
+                }
+                (t(l, "{0} has paused", &[&who]), lines.join("\n"))
+            }),
+            picture,
+        ),
+        Alert::Trouble(problems) => (
+            Box::new(move |l| {
+                let mut lines: Vec<String> = name.iter().cloned().collect();
+                lines.extend(problems.iter().map(|p| problem_text(l, p)));
+                (t(l, "{0} needs attention", &[&who]), lines.join("\n"))
+            }),
+            picture,
+        ),
+        Alert::Lost => (
+            Box::new(move |l| {
+                let mut lines: Vec<String> = name.iter().cloned().collect();
+                lines.push(t(l, "The print may still be running. Check the printer.", &[]));
+                (t(l, "Lost contact with {0}", &[&who]), lines.join("\n"))
+            }),
+            no_camera,
+        ),
+        Alert::Back => (
+            Box::new(move |l| (t(l, "{0} is back", &[&who]), name.clone().unwrap_or_default())),
+            no_camera,
+        ),
+    };
+    notify::send_with_pictures(state, |s| s.attention, text, pics);
 }
 
 /// What the print cost and used: stored on the job, and booked in Spoolman

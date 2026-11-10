@@ -675,10 +675,11 @@ function Thingiverse() {
   );
 }
 
-const NOTIFY_EVENTS: { key: "sliced" | "printing" | "first_layer" | "finished" | "problems" | "queue"; label: string }[] = [
+const NOTIFY_EVENTS: { key: "sliced" | "printing" | "first_layer" | "attention" | "finished" | "problems" | "queue"; label: string }[] = [
   { key: "sliced", label: tr("A model is sliced and ready to print") },
   { key: "printing", label: tr("A print starts") },
   { key: "first_layer", label: tr("The first layer is done (check that it sticks)") },
+  { key: "attention", label: tr("The printer needs you (paused, out of filament, an error, lost contact)") },
   { key: "finished", label: tr("A print is done, failed or was stopped") },
   { key: "queue", label: tr("A printer is free and prints of its type are queued") },
   { key: "problems", label: tr("Something went wrong (slicing, sending, an offline printer)") },
@@ -700,6 +701,7 @@ function newTarget(channel: NotifyTarget["channel"]): NotifyTarget {
     sliced: true,
     printing: true,
     first_layer: true,
+    attention: true,
     finished: true,
     problems: true,
     queue: true,
