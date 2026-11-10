@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.2
+
+- The Home Assistant integration can now show what the printers are doing, not just the history: live status, pause, resume and stop, the chamber light, print speed, the camera, the queue with a start-next button, what's in each tray, and events for automations. Update the integration too.
+- A dashboard card for the print history, served by the integration.
+
 ## 0.4.1
 
 - New notification, "The printer needs you": a print that paused (with the printer's own reason, such as running out of filament), a serious printer error, and lost contact during a print. It's on for your existing notifications; turn it off per notification under Settings.
