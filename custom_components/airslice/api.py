@@ -34,7 +34,7 @@ class AirSliceApi:
             ) as res:
                 if res.status in (401, 403):
                     raise AirSliceAuthError
-                if res.status == 404 and path.startswith("prints"):
+                if res.status == 404 and path.startswith(("prints", "events")):
                     raise AirSliceTooOld
                 if res.status >= 400:
                     raise AirSliceError(f"{path}: HTTP {res.status}")
@@ -50,6 +50,43 @@ class AirSliceApi:
 
     async def prints(self) -> list[dict[str, Any]]:
         return await self._get("prints")
+
+    async def queue(self, printer_id: str) -> list[dict[str, Any]]:
+        return await self._get(f"queue?printer_id={printer_id}")
+
+    async def spools(self, printer_id: str) -> dict[str, Any]:
+        return await self._get(f"printers/{printer_id}/spools")
+
+    async def events(self, after: int | None) -> dict[str, Any]:
+        return await self._get("events" if after is None else f"events?after={after}")
+
+    async def _post(self, path: str, body: dict[str, Any] | None = None) -> None:
+        try:
+            async with self._session.post(
+                f"{self._url}/api/{path}", headers=self._headers, json=body or {}, timeout=TIMEOUT
+            ) as res:
+                if res.status in (401, 403):
+                    raise AirSliceAuthError
+                if res.status >= 400:
+                    text = await res.text()
+                    raise AirSliceError(text[:300] or f"{path}: HTTP {res.status}")
+        except (ClientError, TimeoutError) as err:
+            raise AirSliceError(f"{path}: {err}") from err
+
+    async def control(self, printer_id: str, action: str) -> None:
+        await self._post(f"printers/{printer_id}/control", {"action": action})
+
+    async def start_next(self, printer_id: str) -> None:
+        await self._post(f"printers/{printer_id}/start-next")
+
+    async def camera(self, printer_id: str) -> bytes | None:
+        try:
+            async with self._session.get(
+                f"{self._url}/api/printers/{printer_id}/camera.jpg", headers=self._headers, timeout=TIMEOUT
+            ) as res:
+                return await res.read() if res.status == 200 else None
+        except (ClientError, TimeoutError) as err:
+            raise AirSliceError(f"camera: {err}") from err
 
     async def photo(self, job_id: str) -> bytes | None:
         """The camera picture of a print, if it has one."""

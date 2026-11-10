@@ -310,6 +310,11 @@ screenshots).
   A short tray is `covered` when other AMS trays with the same type, colour and `tray_info_idx` hold the rest
   (beyond their own share) and the backup setting is on (`home_flag` 0x400, on for a real P1S). Backups across AMS
   units and to/from an AMS HT aren't confirmed on a printer; forum reports say across units works.
+- HA integration live data: `LiveCoordinator` polls `GET printers`, `queue`, `printers/{id}/spools` and `events?after=` every
+  10 s (`AirSliceCoordinator` still does the history every 60 s). `event_log.rs` is the in-memory source of `api/events`, filled in
+  `events.rs` whatever the notification settings; `seq` starts at start time × 1000 so a client's position survives a restart.
+  Entity keys follow ha-bambulab's where it has the same thing. HA tests need PyTurboJPEG in the venv (camera). A mock without
+  a query matches any query, so register `events?after=` before `events`.
 - `almost_done` (own toggle) fires once at 1–5 min left, RUNNING, layer ≥ 2 and 50 %+ (`PrintStart::almost_done_sent`).
 - Notification channels (`notify.rs`): `ha`, `telegram` (sendPhoto multipart / sendMessage;
   `AIRSLICE_TELEGRAM_API` points tests at a mock), `ntfy` (PUT the JPEG with

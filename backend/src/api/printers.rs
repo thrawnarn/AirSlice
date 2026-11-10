@@ -60,6 +60,8 @@ pub struct JobRef {
     pub outcome: Option<crate::models::PrintOutcome>,
     pub started_at: Option<i64>,
     pub ended_at: Option<i64>,
+    pub weight_g: Option<f64>,
+    pub length_m: Option<f64>,
 }
 
 fn job_ref(j: &crate::models::Job) -> JobRef {
@@ -79,6 +81,8 @@ fn job_ref(j: &crate::models::Job) -> JobRef {
         outcome: j.print.as_ref().and_then(|p| p.outcome),
         started_at: j.print.as_ref().map(|p| p.started_at),
         ended_at: j.print.as_ref().and_then(|p| p.ended_at),
+        weight_g: j.slice.as_ref().and_then(|s| s.weight_g),
+        length_m: j.slice.as_ref().map(|s| s.filaments.iter().map(|f| f.used_m).sum()),
     }
 }
 

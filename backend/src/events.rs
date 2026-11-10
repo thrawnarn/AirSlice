@@ -2,7 +2,7 @@
 
 use crate::{
     attention::Alert,
-    filament_check,
+    event_log, filament_check,
     i18n::{Lang, clock, money, t},
     jobs::fmt_duration,
     models::{Cost, Job, JobState, PrintOutcome, Printer, now},
@@ -75,6 +75,12 @@ async fn estimate(state: &Shared, job: &Job) -> Option<Cost> {
     crate::spoolman::cost(&use_g, &prices, hours, &costs, false)
 }
 
+/// Note it for clients that poll; `job`'s printer, once it has one.
+fn log_job(kind: &'static str, job: &Job, message: Option<String>) {
+    let printer = job.print.as_ref().map(|p| p.printer_id.as_str()).or_else(|| job.slice.as_ref().map(|s| s.printer_id.as_str())).unwrap_or_default();
+    event_log::record(kind, printer, Some(&job.id), Some(title(job)), message);
+}
+
 fn title(job: &Job) -> String {
     match &job.plate_label {
         Some(l) => format!("{} ({l})", job.model_title),
@@ -114,6 +120,7 @@ async fn printer_of(state: &Shared, job: &Job) -> Option<crate::models::Printer>
 }
 
 pub async fn print_started(state: &Shared, job: &Job) {
+    log_job("print_started", job, None);
     let printer = printer_name(state, job).await;
     let name = title(job);
     let started = job.print.as_ref().map(|p| p.started_at).unwrap_or_else(now);
@@ -145,6 +152,7 @@ pub async fn print_started(state: &Shared, job: &Job) {
         let check = filament_check::for_job(state, job, &pr.printer_id, Some(pr.ams_mapping.clone())).await;
         let short = short_lines(state, &pr.printer_id, &check).await;
         if !short.is_empty() {
+            log_job("filament_low", job, Some(short.iter().map(|s| short_text(Lang::En, s)).collect::<Vec<_>>().join(" ")));
             let who = printer_name(state, job).await;
             let name = title(job);
             let text: notify::Text = Box::new(move |l| {
@@ -160,6 +168,7 @@ pub async fn print_started(state: &Shared, job: &Job) {
 
 /// The first layer is down: a picture shows whether it sticks.
 pub async fn first_layer(state: &Shared, job: &Job) {
+    log_job("first_layer", job, None);
     let printer = printer_name(state, job).await;
     let p = printer_of(state, job).await;
     let name = title(job);
@@ -235,6 +244,12 @@ pub async fn print_ended(state: &Shared, job: &Job) {
         Some(PrintOutcome::Failed) => "Print failed on {0}",
         _ => return,
     };
+    let kind = match outcome {
+        Some(PrintOutcome::Finished) => "print_finished",
+        Some(PrintOutcome::Cancelled) => "print_stopped",
+        _ => "print_failed",
+    };
+    log_job(kind, job, job.error.clone());
     let who = printer.clone();
     let text: notify::Text = Box::new(move |l| {
         // A failed print says why (the printer's own words, in English).
@@ -276,6 +291,7 @@ pub async fn print_ended(state: &Shared, job: &Job) {
         let next_name = title(&next);
         let next_time = next.slice.as_ref().and_then(|s| s.prediction_secs).map(fmt_duration);
         let all = (waiting > 1 && total > 0).then(|| fmt_duration(total));
+        event_log::record("queue_ready", &pid, Some(&next.id), Some(title(&next)), None);
         let check = filament_check::for_job(state, &next, &pid, None).await;
         let short = short_lines(state, &pid, &check).await;
         let text: notify::Text = Box::new(move |l| {
@@ -304,6 +320,7 @@ pub async fn problem(state: &Shared, job: &Job) {
     if job.state != JobState::Failed {
         return;
     }
+    log_job("job_failed", job, job.error.clone());
     // A picture of the printer helps when it went wrong there.
     let on_printer = job.print.is_some();
     let pics = Pictures { camera: if on_printer { printer_of(state, job).await } else { None }, plate: plate_picture(state, job), both: false, site: Vec::new() };
@@ -353,6 +370,7 @@ fn short_text(l: Lang, s: &ShortLine) -> String {
 
 /// A few minutes left: time to go and get it.
 pub async fn almost_done(state: &Shared, job: &Job, minutes: i64) {
+    log_job("almost_done", job, None);
     let printer = printer_name(state, job).await;
     let name = title(job);
     let text: notify::Text = Box::new(move |l| (t(l, "{0} is almost done", &[&printer]), t(l, "{0} — about {1} min left", &[&name, &minutes])));
@@ -374,6 +392,14 @@ pub async fn attention(state: &Shared, printer: &Printer, job: Option<&Job>, sta
     let picture = Pictures { camera: Some(printer.clone()), plate: plate.clone(), both: false, site: Vec::new() };
     let no_camera = Pictures { plate, ..Default::default() };
     let (error, percent, layer, total) = (status.print_error, status.percent, status.layer, status.total_layers);
+    let reasons = |p: &[Problem]| Some(p.iter().map(|x| problem_text(Lang::En, x)).collect::<Vec<_>>().join(" ")).filter(|t| !t.is_empty());
+    let (kind, message) = match &alert {
+        Alert::Paused(p) => ("paused", reasons(p)),
+        Alert::Trouble(p) => ("printer_problem", reasons(p)),
+        Alert::Lost => ("contact_lost", None),
+        Alert::Back => ("contact_back", None),
+    };
+    event_log::record(kind, &printer.id, job.map(|j| j.id.as_str()), name.clone(), message);
     let (text, pics): (notify::Text, Pictures) = match alert {
         Alert::Paused(problems) => (
             Box::new(move |l| {

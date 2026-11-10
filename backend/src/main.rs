@@ -7,6 +7,7 @@ mod colors;
 mod config;
 mod diagnostics;
 mod error;
+mod event_log;
 mod events;
 mod filament_check;
 mod filament_keys;

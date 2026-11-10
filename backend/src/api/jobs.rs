@@ -342,6 +342,17 @@ pub async fn cost_with_trays(State(state): State<Shared>, Path(id): Path<String>
 }
 
 #[derive(Deserialize)]
+pub struct EventsQuery {
+    after: Option<u64>,
+}
+
+/// What happened since `after`, for clients that poll.
+pub async fn events(Query(q): Query<EventsQuery>) -> Json<Value> {
+    let (latest, events) = crate::event_log::since(q.after);
+    Json(json!({ "latest": latest, "events": events }))
+}
+
+#[derive(Deserialize)]
 pub struct FilamentCheckBody {
     /// The trays on screen; absent = the queued ones, or the printer's match.
     #[serde(default)]

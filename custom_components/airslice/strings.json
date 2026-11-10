@@ -33,6 +33,187 @@
       "prints": {
         "name": "Prints",
         "unit_of_measurement": "prints"
+      },
+      "total_hours": {
+        "name": "Total print hours"
+      },
+      "print_status": {
+        "name": "Print status"
+      },
+      "task_name": {
+        "name": "Task name"
+      },
+      "print_progress": {
+        "name": "Print progress"
+      },
+      "remaining_time": {
+        "name": "Remaining time"
+      },
+      "start_time": {
+        "name": "Start time"
+      },
+      "end_time": {
+        "name": "End time"
+      },
+      "current_layer": {
+        "name": "Current layer"
+      },
+      "total_layer_count": {
+        "name": "Total layers"
+      },
+      "print_weight": {
+        "name": "Print weight"
+      },
+      "print_length": {
+        "name": "Print length"
+      },
+      "current_stage": {
+        "name": "Current stage"
+      },
+      "active_tray": {
+        "name": "Active tray"
+      },
+      "nozzle_temperature": {
+        "name": "Nozzle temperature"
+      },
+      "nozzle_target_temperature": {
+        "name": "Nozzle target temperature"
+      },
+      "bed_temperature": {
+        "name": "Bed temperature"
+      },
+      "bed_target_temperature": {
+        "name": "Bed target temperature"
+      },
+      "speed_percent": {
+        "name": "Print speed"
+      },
+      "cooling_fan_speed": {
+        "name": "Cooling fan"
+      },
+      "aux_fan_speed": {
+        "name": "Auxiliary fan"
+      },
+      "chamber_fan_speed": {
+        "name": "Chamber fan"
+      },
+      "heatbreak_fan_speed": {
+        "name": "Heatbreak fan"
+      },
+      "wifi_signal": {
+        "name": "Wi-Fi signal"
+      },
+      "nozzle_size": {
+        "name": "Nozzle size"
+      },
+      "nozzle_type": {
+        "name": "Nozzle type"
+      },
+      "print_type": {
+        "name": "Print source"
+      },
+      "gcode_filename": {
+        "name": "G-code file"
+      },
+      "queue": {
+        "name": "Queue"
+      },
+      "tray": {
+        "name": "{tray}"
+      },
+      "ams_humidity": {
+        "name": "{ams} humidity"
+      },
+      "ams_humidity_level": {
+        "name": "{ams} humidity level"
+      },
+      "ams_temperature": {
+        "name": "{ams} temperature"
+      },
+      "ams_drying_remaining": {
+        "name": "{ams} drying time left"
+      }
+    },
+    "binary_sensor": {
+      "online": {
+        "name": "Online"
+      },
+      "hms_errors": {
+        "name": "Printer messages"
+      },
+      "print_error": {
+        "name": "Print error"
+      },
+      "ams_drying": {
+        "name": "AMS drying"
+      },
+      "ams_filament_backup": {
+        "name": "AMS filament backup"
+      },
+      "ams_unit_drying": {
+        "name": "{ams} drying"
+      }
+    },
+    "button": {
+      "pause_printing": {
+        "name": "Pause print"
+      },
+      "resume_printing": {
+        "name": "Resume print"
+      },
+      "stop_printing": {
+        "name": "Stop print"
+      },
+      "refresh": {
+        "name": "Refresh"
+      },
+      "start_next": {
+        "name": "Start next print (plate is clear)"
+      }
+    },
+    "light": {
+      "chamber_light": {
+        "name": "Chamber light"
+      }
+    },
+    "select": {
+      "printing_speed": {
+        "name": "Print speed",
+        "state": {
+          "silent": "Silent",
+          "standard": "Standard",
+          "sport": "Sport",
+          "ludicrous": "Ludicrous"
+        }
+      }
+    },
+    "camera": {
+      "camera": {
+        "name": "Camera"
+      }
+    },
+    "event": {
+      "printer_event": {
+        "name": "Printer event",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "print_started": "Print started",
+              "first_layer": "First layer done",
+              "almost_done": "Almost done",
+              "print_finished": "Print finished",
+              "print_failed": "Print failed",
+              "print_stopped": "Print stopped",
+              "job_failed": "Job failed",
+              "paused": "Paused",
+              "printer_problem": "Printer problem",
+              "filament_low": "Too little filament",
+              "contact_lost": "Contact lost",
+              "contact_back": "Contact back",
+              "queue_ready": "Queue ready"
+            }
+          }
+        }
       }
     }
   },

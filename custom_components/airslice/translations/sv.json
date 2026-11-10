@@ -33,6 +33,187 @@
       "prints": {
         "name": "Utskrifter",
         "unit_of_measurement": "utskrifter"
+      },
+      "total_hours": {
+        "name": "Utskriftstimmar totalt"
+      },
+      "print_status": {
+        "name": "Utskriftsstatus"
+      },
+      "task_name": {
+        "name": "Uppgift"
+      },
+      "print_progress": {
+        "name": "Förlopp"
+      },
+      "remaining_time": {
+        "name": "Tid kvar"
+      },
+      "start_time": {
+        "name": "Starttid"
+      },
+      "end_time": {
+        "name": "Sluttid"
+      },
+      "current_layer": {
+        "name": "Aktuellt lager"
+      },
+      "total_layer_count": {
+        "name": "Lager totalt"
+      },
+      "print_weight": {
+        "name": "Utskriftens vikt"
+      },
+      "print_length": {
+        "name": "Utskriftens längd"
+      },
+      "current_stage": {
+        "name": "Aktuellt steg"
+      },
+      "active_tray": {
+        "name": "Aktivt fack"
+      },
+      "nozzle_temperature": {
+        "name": "Munstyckets temperatur"
+      },
+      "nozzle_target_temperature": {
+        "name": "Munstyckets måltemperatur"
+      },
+      "bed_temperature": {
+        "name": "Bäddens temperatur"
+      },
+      "bed_target_temperature": {
+        "name": "Bäddens måltemperatur"
+      },
+      "speed_percent": {
+        "name": "Utskriftshastighet"
+      },
+      "cooling_fan_speed": {
+        "name": "Kylfläkt"
+      },
+      "aux_fan_speed": {
+        "name": "Hjälpfläkt"
+      },
+      "chamber_fan_speed": {
+        "name": "Kammarfläkt"
+      },
+      "heatbreak_fan_speed": {
+        "name": "Heatbreak-fläkt"
+      },
+      "wifi_signal": {
+        "name": "Wi-Fi-signal"
+      },
+      "nozzle_size": {
+        "name": "Munstyckets storlek"
+      },
+      "nozzle_type": {
+        "name": "Munstyckets typ"
+      },
+      "print_type": {
+        "name": "Utskriftskälla"
+      },
+      "gcode_filename": {
+        "name": "G-kodfil"
+      },
+      "queue": {
+        "name": "Kö"
+      },
+      "tray": {
+        "name": "{tray}"
+      },
+      "ams_humidity": {
+        "name": "{ams} luftfuktighet"
+      },
+      "ams_humidity_level": {
+        "name": "{ams} fuktnivå"
+      },
+      "ams_temperature": {
+        "name": "{ams} temperatur"
+      },
+      "ams_drying_remaining": {
+        "name": "{ams} torktid kvar"
+      }
+    },
+    "binary_sensor": {
+      "online": {
+        "name": "Online"
+      },
+      "hms_errors": {
+        "name": "Skrivarmeddelanden"
+      },
+      "print_error": {
+        "name": "Utskriftsfel"
+      },
+      "ams_drying": {
+        "name": "AMS torkar"
+      },
+      "ams_filament_backup": {
+        "name": "AMS filamentbackup"
+      },
+      "ams_unit_drying": {
+        "name": "{ams} torkar"
+      }
+    },
+    "button": {
+      "pause_printing": {
+        "name": "Pausa utskriften"
+      },
+      "resume_printing": {
+        "name": "Återuppta utskriften"
+      },
+      "stop_printing": {
+        "name": "Stoppa utskriften"
+      },
+      "refresh": {
+        "name": "Uppdatera"
+      },
+      "start_next": {
+        "name": "Starta nästa utskrift (plattan är tom)"
+      }
+    },
+    "light": {
+      "chamber_light": {
+        "name": "Kammarlampa"
+      }
+    },
+    "select": {
+      "printing_speed": {
+        "name": "Utskriftshastighet",
+        "state": {
+          "silent": "Tyst",
+          "standard": "Standard",
+          "sport": "Sport",
+          "ludicrous": "Ludicrous"
+        }
+      }
+    },
+    "camera": {
+      "camera": {
+        "name": "Kamera"
+      }
+    },
+    "event": {
+      "printer_event": {
+        "name": "Skrivarhändelse",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "print_started": "Utskrift startad",
+              "first_layer": "Första lagret klart",
+              "almost_done": "Nästan klar",
+              "print_finished": "Utskrift klar",
+              "print_failed": "Utskrift misslyckad",
+              "print_stopped": "Utskrift stoppad",
+              "job_failed": "Jobb misslyckat",
+              "paused": "Pausad",
+              "printer_problem": "Skrivarproblem",
+              "filament_low": "För lite filament",
+              "contact_lost": "Kontakt förlorad",
+              "contact_back": "Kontakt tillbaka",
+              "queue_ready": "Kön väntar"
+            }
+          }
+        }
       }
     }
   },

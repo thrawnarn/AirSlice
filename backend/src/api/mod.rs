@@ -47,6 +47,7 @@ pub fn router(state: Shared) -> Router<Shared> {
         .route("/bambu/login", post(settings::bambu_login))
         .route("/bambu/verify", post(settings::bambu_verify))
         .route("/bambu/token", post(settings::bambu_token))
+        .route("/events", get(jobs::events))
         .route("/printers", get(printers::list).post(printers::create))
         .route("/plates", get(printers::plates))
         .route("/printers/{id}", get(printers::get).put(printers::update).delete(printers::delete))

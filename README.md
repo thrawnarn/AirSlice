@@ -223,6 +223,14 @@ and an API key from **Settings → API keys**.
 - `airslice.list_prints` (`entity_id`, optional `search` and `limit`): the prints, newest
   first, for cards and automations.
 - Photos of the results in the media browser, as `media-source://airslice/...`.
+- Live printer status every 10 seconds: state, progress, time left, layers, temperatures, fans,
+  what's in each tray and how much is left (Spoolman or the AMS), AMS humidity and drying, printer
+  messages and the queue.
+- Controls: pause, resume, stop, chamber light, print speed, and start the next queued print.
+- The printer's camera.
+- Events for automations, as `event.airslice_<printer>_event` and `airslice_event` on the bus:
+  print started, first layer, almost done, finished, failed, stopped, paused, printer problem,
+  too little filament, contact lost and back, queue ready.
 - A dashboard card, **AirSlice history** (`custom:airslice-history-card`, option `entity`): every
   print with its photo, result, filament and cost, in English or Swedish. The integration
   serves it and adds it to your dashboards' resources.

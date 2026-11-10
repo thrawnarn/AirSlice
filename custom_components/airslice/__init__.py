@@ -1,9 +1,10 @@
 """AirSlice: the print history of a self-hosted AirSlice in Home Assistant.
 
-AirSlice keeps the prints; this reads them, so nothing here stores history.
-Each printer gets a sensor, `airslice.list_prints` gives cards the prints, the
-result photos are served through the media source, and airslice-history-card
-shows it all on a dashboard.
+AirSlice keeps the prints and talks to the printers; this shows that in Home
+Assistant and stores nothing itself. Each printer gets live sensors, controls, a
+camera and an event entity (also on the bus as `airslice_event`).
+`airslice.list_prints` gives cards the prints, the result photos are served
+through the media source, and airslice-history-card shows them on a dashboard.
 """
 
 from __future__ import annotations
@@ -17,11 +18,19 @@ from homeassistant.helpers.typing import ConfigType
 from .api import AirSliceApi
 from .card import async_setup_card, async_unregister_resource
 from .const import DOMAIN
-from .coordinator import AirSliceConfigEntry, AirSliceCoordinator
+from .coordinator import AirSliceConfigEntry, AirSliceCoordinator, LiveCoordinator
 from .media_source import PhotoView
 from .services import async_setup_services
 
-PLATFORMS: list[Platform] = [Platform.SENSOR]
+PLATFORMS: list[Platform] = [
+    Platform.BINARY_SENSOR,
+    Platform.BUTTON,
+    Platform.CAMERA,
+    Platform.EVENT,
+    Platform.LIGHT,
+    Platform.SELECT,
+    Platform.SENSOR,
+]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -37,6 +46,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: AirSliceConfigEntry) -> 
     api = AirSliceApi(async_get_clientsession(hass), entry.data[CONF_URL], entry.data[CONF_API_KEY])
     coordinator = AirSliceCoordinator(hass, entry, api)
     await coordinator.async_config_entry_first_refresh()
+    coordinator.live = LiveCoordinator(hass, entry, api)
+    await coordinator.live.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

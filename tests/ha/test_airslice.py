@@ -59,6 +59,10 @@ def mock_api(aioclient_mock, prints=PRINTS, status=200):
     aioclient_mock.get(f"{URL}/api/info", json={"version": "x"}, status=status)
     aioclient_mock.get(f"{URL}/api/printers", json=PRINTERS, status=status)
     aioclient_mock.get(f"{URL}/api/prints", json=prints, status=status)
+    aioclient_mock.get(f"{URL}/api/events", json={"latest": 5, "events": []}, status=status)
+    for printer in PRINTERS:
+        aioclient_mock.get(f"{URL}/api/queue?printer_id={printer['id']}", json=[], status=status)
+        aioclient_mock.get(f"{URL}/api/printers/{printer['id']}/spools", json={"configured": False}, status=status)
 
 
 async def setup(hass: HomeAssistant) -> MockConfigEntry:
@@ -237,3 +241,190 @@ async def test_card_is_served_and_kept_as_one_resource(hass, aioclient_mock, has
     await hass.config_entries.async_remove(entry.entry_id)
     await hass.async_block_till_done()
     assert [i["url"] for i in resources.async_items()] == [other["url"]]
+
+
+LIVE_PRINTER = {
+    "id": "p1",
+    "name": "Pandan",
+    "printer_model": "Bambu Lab P1S",
+    "camera": "printer",
+    "current_job": {"id": "j1", "started_at": 1793610000, "weight_g": 89.3, "length_m": 29.5},
+    "status": {
+        "connected": True,
+        "state": "PAUSE",
+        "task_name": "Vase_ab12cd",
+        "percent": 63,
+        "remaining_minutes": 42,
+        "layer": 80,
+        "total_layers": 125,
+        "nozzle_temp": 219.5,
+        "nozzle_target": 220,
+        "bed_temp": 60,
+        "bed_target": 60,
+        "chamber_light": True,
+        "speed_level": 2,
+        "stage": 6,
+        "wifi_dbm": -52,
+        "fan_part": 80,
+        "print_error": None,
+        "ams_backup": True,
+        "hms": ["1800_2000_0002_0001"],
+        "problems": [
+            {
+                "code": "1800_2000_0002_0001",
+                "severity": "serious",
+                "text": "Out of filament",
+                "texts": {"en": "Out of filament", "sv": "Slut på filament"},
+                "url": "https://wiki.example/x",
+            }
+        ],
+        "trays": [
+            {"id": 0, "ams": 0, "slot": 0, "type": "PLA", "color": "#FFFFFF", "name": "Bambu PLA Matte", "remain": None, "active": False},
+            {"id": 1, "ams": 0, "slot": 1, "type": "", "color": "", "remain": None, "active": False},
+            {"id": 128, "ams": 128, "slot": 0, "type": "ABS", "color": "#222222", "name": None, "remain": 40, "spool_g": 1000, "active": True},
+        ],
+        "external": {"id": 254, "type": "TPU", "color": "#000000", "name": None, "remain": None, "active": False},
+        "ams_units": [{"id": 0, "name": "AMS A", "humidity_pct": 35, "humidity_level": 3, "temp": 19.6, "dry_minutes": None}],
+    },
+}
+QUEUED = {"id": "q1", "title": "Next one", "plate_label": "Plate 2", "prediction_secs": 3600, "weight_g": 40.0, "filament_ok": True}
+
+
+def mock_live(aioclient_mock, printer=LIVE_PRINTER, queue=(), events=()):
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(f"{URL}/api/info", json={"version": "x"})
+    aioclient_mock.get(f"{URL}/api/printers", json=[printer])
+    aioclient_mock.get(f"{URL}/api/prints", json=PRINTS[:2])
+    aioclient_mock.get(f"{URL}/api/queue?printer_id=p1", json=list(queue))
+    aioclient_mock.get(f"{URL}/api/printers/p1/spools", json={"configured": True, "trays": {"0": {"id": 7, "remaining_g": 863.4}}})
+    # The more specific first: a mock without a query matches any query.
+    aioclient_mock.get(f"{URL}/api/events?after=5", json={"latest": 6, "events": list(events)})
+    aioclient_mock.get(f"{URL}/api/events", json={"latest": 5, "events": []})
+    aioclient_mock.post(f"{URL}/api/printers/p1/control", json={"ok": True})
+    aioclient_mock.post(f"{URL}/api/printers/p1/start-next", json={})
+    aioclient_mock.get(f"{URL}/api/printers/p1/camera.jpg", content=b"jpeg-bytes")
+
+
+async def refresh(hass, entry):
+    await entry.runtime_data.live.async_refresh()
+    await hass.async_block_till_done()
+
+
+def control_calls(aioclient_mock):
+    return [c[2]["action"] for c in aioclient_mock.mock_calls if str(c[1]).endswith("/control")]
+
+
+async def test_live_sensors_follow_the_printer(hass, aioclient_mock):
+    mock_live(aioclient_mock)
+    await setup(hass)
+    for entity, state in {
+        "sensor.airslice_pandan_print_status": "pause",
+        "sensor.airslice_pandan_task_name": "Vase_ab12cd",
+        "sensor.airslice_pandan_print_progress": "63",
+        "sensor.airslice_pandan_remaining_time": "42",
+        "sensor.airslice_pandan_current_layer": "80",
+        "sensor.airslice_pandan_total_layer_count": "125",
+        "sensor.airslice_pandan_nozzle_temperature": "219.5",
+        "sensor.airslice_pandan_current_stage": "paused_filament_ran_out",
+        "sensor.airslice_pandan_active_tray": "AMS HT 1",
+        "sensor.airslice_pandan_print_weight": "89.3",
+        "sensor.airslice_pandan_ams_0_humidity": "35",
+        "binary_sensor.airslice_pandan_online": "on",
+        "binary_sensor.airslice_pandan_hms_errors": "on",
+        "binary_sensor.airslice_pandan_print_error": "off",
+        "binary_sensor.airslice_pandan_ams_drying": "off",
+        "light.airslice_pandan_chamber_light": "on",
+        "select.airslice_pandan_printing_speed": "standard",
+    }.items():
+        assert hass.states.get(entity).state == state, entity
+    assert hass.states.get("sensor.airslice_pandan_start_time").state.startswith("2026-")
+    assert hass.states.get("sensor.airslice_pandan_end_time").state.startswith("20")
+    hms = hass.states.get("binary_sensor.airslice_pandan_hms_errors").attributes
+    assert hms["1-Code"] == "HMS_1800_2000_0002_0001" and hms["1-Error"] == "Out of filament"
+
+
+async def test_trays_show_what_is_loaded_and_how_much(hass, aioclient_mock):
+    mock_live(aioclient_mock)
+    await setup(hass)
+    tray = hass.states.get("sensor.airslice_pandan_tray_0")
+    assert tray.state == "Bambu PLA Matte"
+    assert tray.attributes["tray"] == "AMS A1"
+    assert tray.attributes["remaining_g"] == 863.4  # Spoolman first
+    assert hass.states.get("sensor.airslice_pandan_tray_1").state == "empty"
+    ht = hass.states.get("sensor.airslice_pandan_tray_128")
+    assert ht.state == "ABS" and ht.attributes["remaining_g"] == 400 and ht.attributes["active"] is True
+    assert hass.states.get("sensor.airslice_pandan_external_spool").state == "TPU"
+
+
+async def test_a_printer_that_is_off_says_offline_and_the_rest_steps_aside(hass, aioclient_mock):
+    mock_live(aioclient_mock)
+    entry = await setup(hass)
+    off = {**LIVE_PRINTER, "status": {**LIVE_PRINTER["status"], "connected": False}}
+    mock_live(aioclient_mock, off)
+    await refresh(hass, entry)
+    assert hass.states.get("sensor.airslice_pandan_print_status").state == "offline"
+    assert hass.states.get("binary_sensor.airslice_pandan_online").state == "off"
+    assert hass.states.get("sensor.airslice_pandan_nozzle_temperature").state == "unavailable"
+
+
+async def test_controls_reach_the_printer(hass, aioclient_mock):
+    mock_live(aioclient_mock)
+    await setup(hass)
+    assert hass.states.get("button.airslice_pandan_pause_printing").state == "unavailable"  # already paused
+    await hass.services.async_call("button", "press", {"entity_id": "button.airslice_pandan_resume_printing"}, blocking=True)
+    await hass.services.async_call("light", "turn_off", {"entity_id": "light.airslice_pandan_chamber_light"}, blocking=True)
+    await hass.services.async_call("select", "select_option", {"entity_id": "select.airslice_pandan_printing_speed", "option": "sport"}, blocking=True)
+    assert control_calls(aioclient_mock) == ["resume", "light_off", "speed_3"]
+
+
+async def test_queue_sensor_and_start_next(hass, aioclient_mock):
+    idle = {**LIVE_PRINTER, "status": {**LIVE_PRINTER["status"], "state": "IDLE"}}
+    mock_live(aioclient_mock, idle, queue=[QUEUED])
+    await setup(hass)
+    queue = hass.states.get("sensor.airslice_pandan_queue")
+    assert queue.state == "1"
+    assert queue.attributes["prints"][0] == {"title": "Next one", "plate": "Plate 2", "minutes": 60, "weight": 40.0, "filament_ok": True}
+    await hass.services.async_call("button", "press", {"entity_id": "button.airslice_pandan_start_next"}, blocking=True)
+    assert any(str(c[1]).endswith("/start-next") for c in aioclient_mock.mock_calls)
+
+
+async def test_start_next_needs_a_queue_and_a_free_printer(hass, aioclient_mock):
+    mock_live(aioclient_mock, queue=[QUEUED])  # the printer is paused
+    await setup(hass)
+    assert hass.states.get("button.airslice_pandan_start_next").state == "unavailable"
+
+
+async def test_camera_gives_the_picture(hass, aioclient_mock):
+    from homeassistant.components.camera import async_get_image
+
+    mock_live(aioclient_mock)
+    await setup(hass)
+    image = await async_get_image(hass, "camera.airslice_pandan_camera")
+    assert image.content == b"jpeg-bytes"
+
+
+async def test_events_reach_automations_once(hass, aioclient_mock):
+    fired = []
+    hass.bus.async_listen("airslice_event", fired.append)
+    mock_live(aioclient_mock)
+    entry = await setup(hass)
+    assert not fired, "what happened before Home Assistant looked isn't replayed"
+    event = {"seq": 6, "at": 1, "kind": "paused", "printer_id": "p1", "job_id": "j1", "title": "Vase", "message": "Out of filament"}
+    mock_live(aioclient_mock, events=[event])
+    await refresh(hass, entry)
+    assert [(e.data["kind"], e.data["printer"]) for e in fired] == [("paused", "Pandan")]
+    state = hass.states.get("event.airslice_pandan_event")
+    assert state.attributes["event_type"] == "paused" and state.attributes["message"] == "Out of filament"
+
+
+async def test_an_older_airslice_without_events_still_works(hass, aioclient_mock):
+    mock_live(aioclient_mock)
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(f"{URL}/api/info", json={"version": "x"})
+    aioclient_mock.get(f"{URL}/api/printers", json=[LIVE_PRINTER])
+    aioclient_mock.get(f"{URL}/api/prints", json=[])
+    aioclient_mock.get(f"{URL}/api/queue?printer_id=p1", json=[])
+    aioclient_mock.get(f"{URL}/api/printers/p1/spools", status=502)
+    aioclient_mock.get(f"{URL}/api/events", status=404)
+    await setup(hass)
+    assert hass.states.get("sensor.airslice_pandan_print_status").state == "pause"
