@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+- New notification, "The printer needs you": a print that paused (with the printer's own reason, such as running out of filament), a serious printer error, and lost contact during a print. It's on for your existing notifications; turn it off per notification under Settings.
+- A warning when a spool holds too little for a print: on the print page, on the queue card, and in notifications. Another tray with the same filament counts as a backup, so you're only warned when the printer would really run out. It needs a remaining amount from Spoolman or the AMS; the print page says when neither knows.
+- New notification five minutes before a print is done. You can turn it off per notification.
+
 ## 0.4.0
 
 - AirSlice is now an MCP server (`/api/mcp`) for AI assistants such as Claude Code. Sign in with an API key. The assistant can look up models, slice, queue, start prints once you confirm the plate is clear, read printer status and history, and get a camera picture.
