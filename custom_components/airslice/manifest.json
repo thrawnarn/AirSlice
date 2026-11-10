@@ -1,6 +1,9 @@
 {
   "domain": "airslice",
   "name": "AirSlice",
+  "after_dependencies": [
+    "lovelace"
+  ],
   "codeowners": [
     "@thrawnarn"
   ],

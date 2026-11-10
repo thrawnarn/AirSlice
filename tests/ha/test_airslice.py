@@ -208,3 +208,32 @@ async def setup_failing(hass: HomeAssistant) -> MockConfigEntry:
     await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     return entry
+
+
+async def test_card_is_served_and_kept_as_one_resource(hass, aioclient_mock, hass_client):
+    from homeassistant.components.lovelace.const import LOVELACE_DATA
+
+    from custom_components.airslice.card import CARD_URL
+
+    assert await async_setup_component(hass, "lovelace", {})
+    mock_api(aioclient_mock)
+    resources = hass.data[LOVELACE_DATA].resources
+    stale = await resources.async_create_item({"res_type": "module", "url": "/local/airslice-history-card.js?v=1"})
+    other = await resources.async_create_item({"res_type": "module", "url": "/local/other-card.js"})
+
+    entry = await setup(hass)
+    await hass.async_block_till_done()
+    urls = [i["url"] for i in resources.async_items()]
+    ours = [u for u in urls if u.startswith(CARD_URL)]
+    assert len(ours) == 1 and "?v=" in ours[0]
+    assert other["url"] in urls
+    assert stale["url"] not in urls
+
+    res = await (await hass_client()).get(ours[0])
+    assert res.status == 200
+    assert "airslice-history-card" in await res.text()
+
+    # Gone with the last AirSlice; what else was there stays.
+    await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+    assert [i["url"] for i in resources.async_items()] == [other["url"]]

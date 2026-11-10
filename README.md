@@ -223,6 +223,9 @@ and an API key from **Settings → API keys**.
 - `airslice.list_prints` (`entity_id`, optional `search` and `limit`): the prints, newest
   first, for cards and automations.
 - Photos of the results in the media browser, as `media-source://airslice/...`.
+- A dashboard card, **AirSlice history** (`custom:airslice-history-card`, option `entity`): every
+  print with its photo, result, filament and cost, in English or Swedish. The integration
+  serves it and adds it to your dashboards' resources.
 
 AirSlice keeps the history; Home Assistant reads it and stores nothing itself. The
 integration needs an AirSlice with `GET /api/prints`.

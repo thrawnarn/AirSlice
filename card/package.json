@@ -1,0 +1,19 @@
+{
+  "name": "airslice-history-card",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "The airslice-history-card Lovelace card, built into custom_components/airslice/www.",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "lit": "^3.3.0"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^20.0.0",
+    "esbuild": "^0.28.0",
+    "happy-dom": "^20.0.0"
+  }
+}

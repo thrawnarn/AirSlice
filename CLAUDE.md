@@ -33,6 +33,9 @@ over a VPN or a reverse proxy.
   pulls the GHCR image (`image:` in config.yaml), so HA backups don't carry it; the image's
   `docker/entrypoint.sh` runs `run.sh` as root under the Supervisor (SUPERVISOR_TOKEN +
   /data/options.json) and drops to uid 1000 otherwise
+- `card/` — `airslice-history-card` (Lit, plain JS): `npm test` in happy-dom, `npm run build` writes
+  `custom_components/airslice/www/`, which is committed. `node_modules` is a symlink to a cache.
+  `card.py` serves it and keeps one dashboard resource, `?v=` = hash of the built file.
 - `custom_components/airslice/` — Home Assistant integration (HACS-style, not part of the
   add-on or image): reads `GET api/prints` every 60 s and on each `list_prints`, one
   sensor per printer, photos through a media source and an authenticated view. It stores
